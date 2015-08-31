@@ -16,20 +16,6 @@ def debug(s):
     if use_debug:
         print(">> DEBUG: {0}".format(s))
 
-def usage():
-    name = os.path.basename(sys.argv[0])
-    print("""Usage: {name} [-s] <command> [args...]
-
-Options:
--s	use sudo when executing remote commands
-
-Commands:
-list [[<user>@]<host>]
-tag [<name>:]<version> <filesystem|container-id>
-push <name> [[<user>@]<host>]:pool
-pull <name> [[<user>@]<host>]:pool""".format(name=name), file=sys.stderr)
-    sys.exit(1)
-
 def runcmd(host, *args):
     cmd = []
     if host is not None:
@@ -79,30 +65,42 @@ class Streamline:
             debug("{host}: {name}:{version}".format(host="local" if host is None else host, name=name, version=version))
         return streamlines
 
-def do_list(args):
+commands = {}
+
+def cmd_list(args):
     debug("list {0}".format(args))
     for name, s in sorted(Streamline.get(None if len(args) < 1 else args[0]).iteritems()):
         for v in sorted(s.versions, key=int):
             print("{name}:{version}".format(name=name, version=v))
+cmd_list.usage = "list [[<user>@]<host>]"
+commands["list"] = cmd_list
 
-def do_tag(args):
+def cmd_tag(args):
     debug("tag {0}".format(args))
-    pass
+cmd_tag.usage = "tag [<name>:]<version> <filesystem|container-id>"
+commands["tag"] = cmd_tag
 
-def do_push(args):
+def cmd_push(args):
     debug("push {0}".format(args))
-    pass
+cmd_push.usage = "push <name> [[<user>@]<host>]:fs"
+commands["push"] = cmd_push
 
-def do_pull(args):
+def cmd_pull(args):
     debug("pull {0}".format(args))
-    pass
+cmd_pull.usage = "pull <name> [[<user>@]<host>]:pool"
+commands["pull"] = cmd_pull
 
-commands = {
-    "list": do_list,
-    "tag": do_tag,
-    "push": do_push,
-    "pull": do_pull,
-}
+def usage():
+    name = os.path.basename(sys.argv[0])
+    print("""Usage: {name} [-s] <command> [args...]
+
+Options:
+-s	use sudo when executing remote commands
+
+Commands:""".format(name=name), file=sys.stderr)
+    for c in sorted(commands.iterkeys()):
+        print(commands[c].usage)
+    sys.exit(1)
 
 def main(args):
     # parse command-line options
