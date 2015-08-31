@@ -4,9 +4,11 @@ import os, sys
 import getopt
 import re
 import subprocess
+import pipes
+from copy import copy
 
 # constants
-VM_PROPERTY_STREAMLINE = "vm:streamline"
+ZFS_VM_PREFIX = "zfs-vm"
 
 # globals
 commands = {}
@@ -48,10 +50,26 @@ def runcmd(host, *args):
         exit(1)
     return output
 
+def runshell(*args):
+    """run command through shell"""
+    cmd = ' '.join(map(lambda x:
+        x if len(x) == 1 and x in "&|><" or x == ">>" else pipes.quote(x),
+        args))
+    debug("runshell: {0}".format(cmd))
+    try:
+        subprocess.check_call(cmd, shell=True)
+    except subprocess.CalledProcessError as err:
+        print("Command returned exit code {0}".format(err.returncode), file=sys.stderr)
+        exit(1)
+
 class Streamline:
-    def __init__(self, name):
+    def __init__(self, fs, name):
+        self.fs = fs
         self.name = name
         self.versions = []
+
+    def get_snapshot(self, v):
+        return "{fs}@{prefix}:{name}:{version}".format(fs=self.fs, prefix=ZFS_VM_PREFIX, name=self.name, version=v)
 
     @staticmethod
     def get(host):
@@ -62,27 +80,25 @@ class Streamline:
 :rtype: dict of Streamlines (by name)"""
         streamlines = {}
 
-        for l in runcmd(host, "zfs", "get", "-H", "-t", "snapshot", "-o", "name,value", VM_PROPERTY_STREAMLINE).split("\n"):
-            try:
-                name, value = l.split("\t")
-            except ValueError:
+        for l in runcmd(host, "zfs", "list", "-H", "-t", "snapshot", "-o", "name").split("\n"):
+            if not l:
                 continue
-            if value == "-":
-                continue
-            debug("{0}".format(l))
+            debug(l)
             try:
-                fs, snapshot = name.split("@")
+                fs, snapshot = l.split("@")
             except ValueError:
-                print("Warning: Invalid snapshot name {0} (missing '@')".format(name))
+                print("Warning: Invalid snapshot name {0} (missing '@')".format(l))
                 continue
             try:
-                name, version = snapshot.split(":")
+                prefix, name, version = snapshot.split(":")
             except ValueError:
-                print("Warning: Invalid snapshot version {0} (missing ':')".format(snapshot))
+                debug("Not a zfs-vm snapshot {0} (missing ':')".format(snapshot))
                 continue
+            if prefix != ZFS_VM_PREFIX:
+                debug("Not a zfs-vm snapshot {0} (prefix is not {1})".format(snapshot, ZFS_VM_PREFIX))
             s = streamlines.get(name)
             if s is None:
-                s = streamlines[name] = Streamline(name)
+                s = streamlines[name] = Streamline(fs, name)
             s.versions += [version]
             debug("{host}: {name}:{version}".format(host="local" if host is None else host, name=name, version=version))
         return streamlines
@@ -93,14 +109,18 @@ class Streamline:
 :type host: str
 :param ls: local streamline (can be None)
 :type ls: Streamline"""
+        if not self.versions:
+            debug("empty version list")
+            return
+
         cmd = hostcmd(self.host, "zfs", "send")
         if ls is not None:
             # TODO: compute incremental versions to pull
             pass
-        cmd += ["|", "zfs", "receive"]
+        cmd += ["|", "zfs", "recv"]
         debug("pull: {0}".format(' '.join(cmd)))
 
-    def push(self, host, fs, rs):
+    def push(self, host, fs, remote):
         """push local streamline to remote
 :param host: host to push to (None for localhost)
 :type host: str
@@ -108,22 +128,59 @@ class Streamline:
 :type fs: str
 :param rs: remote streamline (can be None)
 :type rs: Streamline"""
-        cmd = ["zfs", "send"]
-        if rs is not None:
-            # TODO: compute incremental versions to push
-            pass
+        if not self.versions:
+            debug("empty version list")
+            return
+
+        self.versions.sort(key=int)
+        debug("self.versions: {0}".format(self.versions))
+
+        cmd = ["zfs", "send", "-p"]
+        if use_debug:
+            cmd += ["-v"]   # verbose
+
+        if remote is None:
+            debug("no remote versions, pushing base version {0}".format(self.versions[0]))
+            cmd_base = copy(cmd)
+            cmd_base += [ self.get_snapshot(self.versions[0]) ]
+            cmd_base += ["|"]
+            cmd_base += hostcmd(host, "zfs", "recv", "-u", "-F", os.path.join(fs, self.name))
+            runshell(*cmd_base)
+
+            remote = Streamline(os.path.join(fs, self.name), self.name)
+            remote.versions += self.versions[0]
+        else:
+            remote.versions.sort(key=int)
+            debug("remote.versions: {0}".format(remote.versions))
+
+        # find highest common version
+        common_ver = None
+        for v in reversed(self.versions):
+            if v in remote.versions:
+                common_ver = v
+                break
+        if common_ver is None:
+            print("No common versions found")
+            return
+        if common_ver == self.versions[-1]:
+            print("Everything up-to-date")
+            return
+        cmd += ["-I", self.get_snapshot(common_ver), self.get_snapshot(self.versions[-1]) ]
         cmd += ["|"]
-        cmd += hostcmd(host, "zfs", "receive")
-        debug("push: {0}".format(' '.join(cmd)))
+        cmd += hostcmd(host, "zfs", "recv", "-u", os.path.join(fs, self.name))
+        runshell(*cmd)
 
 ###########################################################################
 # commands
 def cmd_list(args):
     """list command"""
     debug("list {0}".format(args))
-    for name, s in sorted(Streamline.get(None if len(args) < 1 else args[0]).iteritems()):
+    streamlines = Streamline.get(None if len(args) < 1 else args[0])
+    for name in sorted(streamlines.iterkeys()):
+        s = streamlines[name]
+        print("{fs}".format(fs=s.fs))
         for v in sorted(s.versions, key=int):
-            print("{name}:{version}".format(name=name, version=v))
+            print("\t{name}:{version}".format(name=s.name, version=v))
 cmd_list.usage = "list [[<user>@]<host>]"
 commands["list"] = cmd_list
 
