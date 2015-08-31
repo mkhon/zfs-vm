@@ -68,8 +68,36 @@ class Streamline:
         self.name = name
         self.versions = []
 
-    def get_snapshot(self, v):
-        return "{fs}@{prefix}:{name}:{version}".format(fs=self.fs, prefix=ZFS_VM_PREFIX, name=self.name, version=v)
+    @staticmethod
+    def _snapshot_name(fs, name, version):
+        return "{fs}@{prefix}:{name}:{version}".format(fs=fs, prefix=ZFS_VM_PREFIX, name=name, version=version)
+
+    def snapshot_name(self, version):
+        return self._snapshot_name(self.fs, self.name, version)
+
+    @staticmethod
+    def parse_name(snapshot):
+        """parse streamline name and version from snapshot name
+:param snapshot: snapshot name
+:type snapshot: str
+:returns: a tuple (fs, name, version) or None if not a zfs-vm snapshot"""
+        try:
+            fs, snapname = snapshot.split("@")
+        except ValueError:
+            print("Warning: Invalid snapshot name {0} (missing '@')".format(snapshot))
+            return None
+        try:
+            prefix, name, version = snapname.split(":")
+        except ValueError:
+            debug("Not a zfs-vm snapshot {0} (missing ':' in snapname)".format(snapshot))
+            return None
+        if prefix != ZFS_VM_PREFIX:
+            debug("Not a zfs-vm snapshot {0} (prefix is not {1})".format(snapshot, ZFS_VM_PREFIX))
+            return None
+        if not version.isdigit():
+            debug("Not a zfs-vm snapshot {0} (version is not a number)".format(snapshot))
+            return None
+        return fs, name, version
 
     @staticmethod
     def get(host):
@@ -84,18 +112,10 @@ class Streamline:
             if not l:
                 continue
             debug(l)
-            try:
-                fs, snapshot = l.split("@")
-            except ValueError:
-                print("Warning: Invalid snapshot name {0} (missing '@')".format(l))
+            n = Streamline.parse_name(l)
+            if n is None:
                 continue
-            try:
-                prefix, name, version = snapshot.split(":")
-            except ValueError:
-                debug("Not a zfs-vm snapshot {0} (missing ':')".format(snapshot))
-                continue
-            if prefix != ZFS_VM_PREFIX:
-                debug("Not a zfs-vm snapshot {0} (prefix is not {1})".format(snapshot, ZFS_VM_PREFIX))
+            (fs, name, version) = n
             s = streamlines.get(name)
             if s is None:
                 s = streamlines[name] = Streamline(fs, name)
@@ -140,7 +160,7 @@ class Streamline:
             # pull base version
             debug("no local versions, pulling base version {0}".format(self.versions[0]))
             cmd_base = copy(cmd)
-            cmd_base += [ self.get_snapshot(self.versions[0]) ]
+            cmd_base += [ self.snapshot_name(self.versions[0]) ]
             cmd_base += ["|"]
             cmd_base += hostcmd(None, "zfs", "recv", "-u", "-F", os.path.join(local_fs, self.name))
             runshell(*cmd_base)
@@ -163,7 +183,7 @@ class Streamline:
             print("All up-to-date")
             return
 
-        cmd += ["-I", self.get_snapshot(common_ver), self.get_snapshot(self.versions[-1]) ]
+        cmd += ["-I", self.snapshot_name(common_ver), self.snapshot_name(self.versions[-1]) ]
         cmd += ["|"]
         cmd += hostcmd(None, "zfs", "recv", "-u", os.path.join(local_fs, self.name))
         runshell(*cmd)
@@ -191,7 +211,7 @@ class Streamline:
             # push base version
             debug("no remote versions, pushing base version {0}".format(self.versions[0]))
             cmd_base = copy(cmd)
-            cmd_base += [ self.get_snapshot(self.versions[0]) ]
+            cmd_base += [ self.snapshot_name(self.versions[0]) ]
             cmd_base += ["|"]
             cmd_base += hostcmd(remote_host, "zfs", "recv", "-u", "-F", os.path.join(remote_fs, self.name))
             runshell(*cmd_base)
@@ -211,7 +231,7 @@ class Streamline:
             print("Everything up-to-date")
             return
 
-        cmd += ["-I", self.get_snapshot(common_ver), self.get_snapshot(self.versions[-1]) ]
+        cmd += ["-I", self.snapshot_name(common_ver), self.snapshot_name(self.versions[-1]) ]
         cmd += ["|"]
         cmd += hostcmd(remote_host, "zfs", "recv", "-u", os.path.join(remote_fs, self.name))
         runshell(*cmd)
@@ -225,18 +245,60 @@ def cmd_list(args):
     for name in sorted(streamlines.iterkeys()):
         s = streamlines[name]
         for v in sorted(s.versions, key=int):
-            print(s.get_snapshot(v))
-cmd_list.usage = "list [[<user>@]<host>]"
+            print(s.snapshot_name(v))
+cmd_list.usage = "list [[user@]host]"
 commands["list"] = cmd_list
 
 def cmd_tag(args):
     """tag command"""
     debug("tag {0}".format(args))
-    if len(args) < 2:
+    try:
+        opts, args = getopt.getopt(args, "n:")
+    except getopt.GetoptError as err:
+        print(str(err), file=sys.stderr)
         usage(cmd_tag)
-    version = args[0]
-    fs = args[1]
-cmd_tag.usage = "tag [<name>:]<version> <filesystem|container-id>"
+    version = None
+    for o, a in opts:
+        if o == "-n":
+            version = a
+    if len(args) < 1:
+        usage(cmd_tag)
+    fs = args[0]
+
+    name = None
+    if version is not None:
+        try:
+            name, version = version.split(":")
+        except ValueError:
+            pass
+    if name is None:
+        # try to detect name/version from fs
+        cmd = ["zfs", "get", "-H", "-o", "value", "origin", fs]
+        origin = runcmd(None, *cmd).split("\n")[0]
+        debug("filesystem {0}: origin {1}".format(fs, origin))
+        if origin == "-":
+            name = None
+        else:
+            n = Streamline.parse_name(origin)
+            if n is not None:
+                name = n[1]
+                debug("using streamline name {0}".format(name))
+                if version is None:
+                    local_streamlines = Streamline.get(None)
+                    s = local_streamlines.get(name)
+                    if s is not None:
+                        version = int(s.versions[-1]) + 1
+                        debug("using version {0} (last version {1})".format(version, s.versions[-1]))
+    if name is None or version is None:
+        print("""Error: Failed to detect streamline name and version from filesystem {0}
+Please specify streamline name with -n option
+""".format(fs), file=sys.stderr)
+        usage(cmd_tag)
+
+    cmd = ["zfs", "snapshot", Streamline._snapshot_name(fs, name, version)]
+    runshell(*cmd)
+
+cmd_tag.usage = "tag [-n [name:]version] <filesystem|container-id>"
 commands["tag"] = cmd_tag
 
 def cmd_pull(args):
@@ -258,7 +320,7 @@ def cmd_pull(args):
         if name is not None and s.name != name:
             continue
         s.pull(remote_host, local_fs, local_streamlines.get(s.name))
-cmd_pull.usage = "pull <[<user>@]host | local> <fs/[name]>"
+cmd_pull.usage = "pull <[user@]host | local> <fs/[name]>"
 commands["pull"] = cmd_pull
 
 def cmd_push(args):
@@ -280,7 +342,7 @@ def cmd_push(args):
         if name is not None and s.name != name:
             continue
         s.push(remote_host, remote_fs, remote_streamlines.get(s.name))
-cmd_push.usage = "push [[<user>@]<host>:]<fs> [name]"
+cmd_push.usage = "push <[[user@]host:]fs> [name]"
 commands["push"] = cmd_push
 
 def usage(cmd=None):
