@@ -103,31 +103,28 @@ class Streamline:
             debug("{host}: {name}:{version}".format(host="local" if host is None else host, name=name, version=version))
         return streamlines
 
-    def pull(self, host, ls):
+    @staticmethod
+    def find_source(a, b):
+        """find highest common version from a in b
+:type a: Streamline
+:type b: Streamline
+:returns: highest common version from a in b
+:rtype: str"""
+        common_ver = None
+        for v in reversed(a.versions):
+            if v in b.versions:
+                common_ver = v
+                break
+        return common_ver
+
+    def pull(self, remote_host, local_fs, local):
         """pull remote streamline to local
-:param host: host to pull from (None for localhost)
-:type host: str
-:param ls: local streamline (can be None)
-:type ls: Streamline"""
-        if not self.versions:
-            debug("empty version list")
-            return
-
-        cmd = hostcmd(self.host, "zfs", "send")
-        if ls is not None:
-            # TODO: compute incremental versions to pull
-            pass
-        cmd += ["|", "zfs", "recv"]
-        debug("pull: {0}".format(' '.join(cmd)))
-
-    def push(self, host, fs, remote):
-        """push local streamline to remote
-:param host: host to push to (None for localhost)
-:type host: str
-:param fs: filesystem to put snapshot to
-:type fs: str
-:param rs: remote streamline (can be None)
-:type rs: Streamline"""
+:param remote_host: host to pull from (None for localhost)
+:type remote_host: str
+:param remote_fs: filesystem to put snapshot to
+:type remote_fs: str
+:param local: local streamline (can be None)
+:type local: Streamline"""
         if not self.versions:
             debug("empty version list")
             return
@@ -135,39 +132,88 @@ class Streamline:
         self.versions.sort(key=int)
         debug("self.versions: {0}".format(self.versions))
 
-        cmd = ["zfs", "send", "-p"]
+        cmd = hostcmd(remote_host, "zfs", "send", "-p")
+        if use_debug:
+            cmd += ["-v"]   # verbose
+
+        if local is None:
+            # pull base version
+            debug("no local versions, pulling base version {0}".format(self.versions[0]))
+            cmd_base = copy(cmd)
+            cmd_base += [ self.get_snapshot(self.versions[0]) ]
+            cmd_base += ["|"]
+            cmd_base += hostcmd(None, "zfs", "recv", "-u", "-F", os.path.join(local_fs, self.name))
+            runshell(*cmd_base)
+
+            local = Streamline(os.path.join(local_fs, self.name), self.name)
+            local.versions += self.versions[0]
+        else:
+            # override local fs
+            local_fs = os.path.dirname(local.fs)
+
+            local.versions.sort(key=int)
+            debug("local.versions: {0}".format(local.versions))
+
+        # find highest common version
+        common_ver = self.find_source(self, local)
+        if common_ver is None:
+            print("No common versions found")
+            return
+        elif common_ver == self.versions[-1]:
+            print("All up-to-date")
+            return
+
+        cmd += ["-I", self.get_snapshot(common_ver), self.get_snapshot(self.versions[-1]) ]
+        cmd += ["|"]
+        cmd += hostcmd(None, "zfs", "recv", "-u", os.path.join(local_fs, self.name))
+        runshell(*cmd)
+
+    def push(self, remote_host, remote_fs, remote):
+        """push local streamline to remote
+:param remote_host: host to push to (None for localhost)
+:type remote_host: str
+:param remote_fs: filesystem to put snapshot to
+:type remote_fs: str
+:param remote: remote streamline (can be None)
+:type remote: Streamline"""
+        if not self.versions:
+            debug("empty version list")
+            return
+
+        self.versions.sort(key=int)
+        debug("self.versions: {0}".format(self.versions))
+
+        cmd = hostcmd(None, "zfs", "send", "-p")
         if use_debug:
             cmd += ["-v"]   # verbose
 
         if remote is None:
+            # push base version
             debug("no remote versions, pushing base version {0}".format(self.versions[0]))
             cmd_base = copy(cmd)
             cmd_base += [ self.get_snapshot(self.versions[0]) ]
             cmd_base += ["|"]
-            cmd_base += hostcmd(host, "zfs", "recv", "-u", "-F", os.path.join(fs, self.name))
+            cmd_base += hostcmd(remote_host, "zfs", "recv", "-u", "-F", os.path.join(remote_fs, self.name))
             runshell(*cmd_base)
 
-            remote = Streamline(os.path.join(fs, self.name), self.name)
+            remote = Streamline(os.path.join(remote_fs, self.name), self.name)
             remote.versions += self.versions[0]
         else:
             remote.versions.sort(key=int)
             debug("remote.versions: {0}".format(remote.versions))
 
         # find highest common version
-        common_ver = None
-        for v in reversed(self.versions):
-            if v in remote.versions:
-                common_ver = v
-                break
+        common_ver = self.find_source(self, remote)
         if common_ver is None:
             print("No common versions found")
             return
-        if common_ver == self.versions[-1]:
+        elif common_ver == self.versions[-1]:
             print("Everything up-to-date")
             return
+
         cmd += ["-I", self.get_snapshot(common_ver), self.get_snapshot(self.versions[-1]) ]
         cmd += ["|"]
-        cmd += hostcmd(host, "zfs", "recv", "-u", os.path.join(fs, self.name))
+        cmd += hostcmd(remote_host, "zfs", "recv", "-u", os.path.join(remote_fs, self.name))
         runshell(*cmd)
 
 ###########################################################################
@@ -178,9 +224,8 @@ def cmd_list(args):
     streamlines = Streamline.get(None if len(args) < 1 else args[0])
     for name in sorted(streamlines.iterkeys()):
         s = streamlines[name]
-        print("{fs}".format(fs=s.fs))
         for v in sorted(s.versions, key=int):
-            print("\t{name}:{version}".format(name=s.name, version=v))
+            print(s.get_snapshot(v))
 cmd_list.usage = "list [[<user>@]<host>]"
 commands["list"] = cmd_list
 
@@ -194,36 +239,26 @@ def cmd_tag(args):
 cmd_tag.usage = "tag [<name>:]<version> <filesystem|container-id>"
 commands["tag"] = cmd_tag
 
-def parse_remote(remote):
-    """parse remote specification
-:param remote: remote specification ([[<user>@]<host>:][fs])
-:type remote: str
-:returns: parsed host and fs
-"""
-    m = re.match(r"((.*):)?([^:]+)?", remote)
-    if m is None:
-        print("Error: Invalid remote specification", file=sys.stderr)
-        sys.exit(1)
-    host = m.group(2)
-    fs = m.group(3)
-    return host, fs
-
 def cmd_pull(args):
     """pull command"""
     debug("pull {0}".format(args))
-    if len(args) < 1:
+    if len(args) < 2:
         usage(cmd_pull)
-    remote_host, remote_fs = parse_remote(args[0])
-    name = None if len(args) < 2 else args[1]
-    debug("remote_host: {0}, remote_fs: {1}, name: {2}".format(remote_host, remote_fs, name))
+    remote_host = args[0] if args[0] != "local" else None
+    if args[1][-1] == "/":
+        local_fs = args[1]
+        name = None
+    else:
+        local_fs = os.path.dirname(args[1])
+        name = os.path.basename(args[1])
+    debug("remote_host: {0}, local_fs: {1}, name: {2}".format(remote_host, local_fs, name))
 
     local_streamlines = Streamline.get(None)
     for s in Streamline.get(remote_host).itervalues():
         if name is not None and s.name != name:
             continue
-        # TODO: filter on remote_fs
-        s.pull(remote_host, local_streamlines.get(s.name))
-cmd_pull.usage = "pull [[<user>@]<host>:][fs] [name]"
+        s.pull(remote_host, local_fs, local_streamlines.get(s.name))
+cmd_pull.usage = "pull <[<user>@]host | local> <fs/[name]>"
 commands["pull"] = cmd_pull
 
 def cmd_push(args):
@@ -231,11 +266,14 @@ def cmd_push(args):
     debug("push {0}".format(args))
     if len(args) < 1:
         usage(cmd_push)
-    remote_host, remote_fs = parse_remote(args[0])
+    m = re.match(r"((.*):)?([^:]+)", args[0])
+    if m is None:
+        print("Error: Invalid remote specification\n", file=sys.stderr)
+        usage(cmd_push)
+    remote_host = m.group(2)
+    remote_fs = m.group(3)
     name = None if len(args) < 2 else args[1]
     debug("remote_host: {0}, remote_fs: {1}, name: {2}".format(remote_host, remote_fs, name))
-    if remote_fs is None:
-        usage(cmd_push)
 
     remote_streamlines = Streamline.get(remote_host)
     for s in Streamline.get(None).itervalues():
