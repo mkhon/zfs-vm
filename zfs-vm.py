@@ -5,6 +5,7 @@ import getopt
 import re
 import subprocess
 import pipes
+import collections
 from copy import copy
 
 # constants
@@ -62,18 +63,96 @@ def runshell(*args):
         print("Command returned exit code {0}".format(err.returncode), file=sys.stderr)
         exit(1)
 
-class Streamline:
-    def __init__(self, fs, name):
-        self.fs = fs
-        self.name = name
+#
+# Iterate over possible incremental send/recv versions
+#
+# If the versions in src are:
+# fs1@1, fs1@2, fs1@3, fs1@4, fs2@5, fs2@6, fs2@7, fs3@8, fs3@9
+# and start_ver is 2 the iterator returns
+# - fs1@4 (last version in fs1)
+# - fs2@5 (first version in fs2)
+# - fs2@7 (last version in fs2)
+# - fs3@8 (first version in fs3)
+# - fs3@9 (last version in fs3)
+class VersionIterator:
+    def __init__(self, s, start_ver):
+        """Initialize version iterator
+:param s: streamline to iterate over
+:type s: Streamline
+:param start_ver: start version
+:type start_ver: str"""
+        self.s = s
+        self.start_ver = start_ver
         self.versions = []
+        self.i = None
+        self.prev_ver = None
+        self.next_ver = None
+ 
+    def __iter__(self):
+        return self
+
+    def next(self):
+        if self.i is None:
+            # initialize: find start position
+            self.i = self.s.versions.iterkeys()
+            while True:
+                self.prev_ver = self.i.next()
+                if self.prev_ver == self.start_ver:
+                    self.next_ver = self.i.next()
+                    break
+
+        if len(self.versions) == 0:
+            # find more versions
+            if self.next_ver is None:
+                raise StopIteration
+
+            while True:
+                try:
+                    if self.s.versions[self.prev_ver] != self.s.versions[self.next_ver]:
+                        # different fs found
+                        if self.prev_ver != self.start_ver:
+                            self.versions.append(self.prev_ver)
+                        self.versions.append(self.next_ver)
+
+                        self.start_ver = self.prev_ver = self.next_ver
+                        self.next_ver = self.i.next()
+                        break
+
+                    self.prev_ver = self.next_ver
+                    self.next_ver = self.i.next()
+                except StopIteration:
+                    if self.next_ver != self.start_ver:
+                        self.versions.append(self.next_ver)
+                    self.next_ver = None
+                    break
+
+        if len(self.versions) == 0:
+            raise StopIteration
+        return self.versions.pop(0)
+
+class Streamline:
+    def __init__(self, name):
+        self.name = name
+        self.versions = {}
+
+    def first_version(self):
+        """get first version number"""
+        return self.versions.iterkeys().next()
+
+    def last_version(self):
+        """get last version number"""
+        return reversed(self.versions.keys()).next()
+
+    def version_fs(self, parent_fs, version):
+        """build version fs name"""
+        return os.path.join(parent_fs, os.path.basename(self.versions[version]))
 
     @staticmethod
-    def _snapshot_name(fs, name, version):
+    def snapshot_name(fs, name, version):
         return "{fs}@{prefix}:{name}:{version}".format(fs=fs, prefix=ZFS_VM_PREFIX, name=name, version=version)
 
-    def snapshot_name(self, version):
-        return self._snapshot_name(self.fs, self.name, version)
+    def version_snapshot(self, v):
+        return self.snapshot_name(self.versions[v], self.name, v)
 
     @staticmethod
     def parse_name(snapshot):
@@ -118,123 +197,68 @@ class Streamline:
             (fs, name, version) = n
             s = streamlines.get(name)
             if s is None:
-                s = streamlines[name] = Streamline(fs, name)
-            s.versions += [version]
-            debug("{host}: {name}:{version}".format(host="local" if host is None else host, name=name, version=version))
+                s = streamlines[name] = Streamline(name)
+            s.versions[version] = fs
+        for s in streamlines.itervalues():
+            s.versions = collections.OrderedDict(sorted(s.versions.items(), key=lambda x: int(x[0])))
         return streamlines
 
-    @staticmethod
-    def find_source(a, b):
-        """find highest common version from a in b
-:type a: Streamline
+    def __find_common(self, s):
+        """find highest common version with b
 :type b: Streamline
-:returns: highest common version from a in b
+:returns: highest common version or None
 :rtype: str"""
-        common_ver = None
-        for v in reversed(a.versions):
-            if v in b.versions:
-                common_ver = v
+        return None
+
+    def sync(self, s, send_host, recv_host, recv_parent_fs):
+        if not self.versions:
+            debug("empty version list")
+            return
+
+        debug("self.versions: {0}".format(self.versions))
+
+        cmd = hostcmd(send_host, "zfs", "send", "-p")
+        if use_debug:
+            cmd += ["-v"]   # verbose
+
+        # push base version if no versions on receiver
+        if s is None:
+            base_ver = self.first_version()
+            debug("syncing base version {0}".format(base_ver))
+            cmd_base = copy(cmd)
+            cmd_base += [ self.version_snapshot(base_ver) ]
+            cmd_base += ["|"]
+            cmd_base += hostcmd(recv_host, "zfs", "recv", "-u", "-F", self.version_fs(recv_parent_fs, base_ver))
+            runshell(*cmd_base)
+
+            s = Streamline(self.name)
+            s.versions[base_ver] = self.version_fs(recv_parent_fs, base_ver)
+        else:
+            debug("versions: {0}".format(s.versions))
+
+        # find highest common version
+        for v in reversed(self.versions):
+            if v in s.versions:
+                start_ver = v
                 break
-        return common_ver
-
-    def pull(self, remote_host, local_fs, local):
-        """pull remote streamline to local
-:param remote_host: host to pull from (None for localhost)
-:type remote_host: str
-:param remote_fs: filesystem to put snapshot to
-:type remote_fs: str
-:param local: local streamline (can be None)
-:type local: Streamline"""
-        if not self.versions:
-            debug("empty version list")
-            return
-
-        self.versions.sort(key=int)
-        debug("self.versions: {0}".format(self.versions))
-
-        cmd = hostcmd(remote_host, "zfs", "send", "-p")
-        if use_debug:
-            cmd += ["-v"]   # verbose
-
-        if local is None:
-            # pull base version
-            debug("no local versions, pulling base version {0}".format(self.versions[0]))
-            cmd_base = copy(cmd)
-            cmd_base += [ self.snapshot_name(self.versions[0]) ]
-            cmd_base += ["|"]
-            cmd_base += hostcmd(None, "zfs", "recv", "-u", "-F", os.path.join(local_fs, self.name))
-            runshell(*cmd_base)
-
-            local = Streamline(os.path.join(local_fs, self.name), self.name)
-            local.versions += self.versions[0]
         else:
-            # override local fs
-            local_fs = os.path.dirname(local.fs)
-
-            local.versions.sort(key=int)
-            debug("local.versions: {0}".format(local.versions))
-
-        # find highest common version
-        common_ver = self.find_source(self, local)
-        if common_ver is None:
             print("No common versions found")
             return
-        elif common_ver == self.versions[-1]:
-            print("All up-to-date")
-            return
 
-        cmd += ["-I", self.snapshot_name(common_ver), self.snapshot_name(self.versions[-1]) ]
-        cmd += ["|"]
-        cmd += hostcmd(None, "zfs", "recv", "-u", os.path.join(local_fs, self.name))
-        runshell(*cmd)
-
-    def push(self, remote_host, remote_fs, remote):
-        """push local streamline to remote
-:param remote_host: host to push to (None for localhost)
-:type remote_host: str
-:param remote_fs: filesystem to put snapshot to
-:type remote_fs: str
-:param remote: remote streamline (can be None)
-:type remote: Streamline"""
-        if not self.versions:
-            debug("empty version list")
-            return
-
-        self.versions.sort(key=int)
-        debug("self.versions: {0}".format(self.versions))
-
-        cmd = hostcmd(None, "zfs", "send", "-p")
-        if use_debug:
-            cmd += ["-v"]   # verbose
-
-        if remote is None:
-            # push base version
-            debug("no remote versions, pushing base version {0}".format(self.versions[0]))
-            cmd_base = copy(cmd)
-            cmd_base += [ self.snapshot_name(self.versions[0]) ]
-            cmd_base += ["|"]
-            cmd_base += hostcmd(remote_host, "zfs", "recv", "-u", "-F", os.path.join(remote_fs, self.name))
-            runshell(*cmd_base)
-
-            remote = Streamline(os.path.join(remote_fs, self.name), self.name)
-            remote.versions += self.versions[0]
-        else:
-            remote.versions.sort(key=int)
-            debug("remote.versions: {0}".format(remote.versions))
-
-        # find highest common version
-        common_ver = self.find_source(self, remote)
-        if common_ver is None:
-            print("No common versions found")
-            return
-        elif common_ver == self.versions[-1]:
+        # check if nothing to do
+        last_ver = self.last_version()
+        if start_ver == last_ver:
             print("Everything up-to-date")
             return
 
-        cmd += ["-I", self.snapshot_name(common_ver), self.snapshot_name(self.versions[-1]) ]
-        cmd += ["|"]
-        cmd += hostcmd(remote_host, "zfs", "recv", "-u", os.path.join(remote_fs, self.name))
-        runshell(*cmd)
+        # perform incremental send/recv
+        for next_ver in VersionIterator(self, start_ver):
+            inc_cmd = copy(cmd)
+            inc_cmd += ["-I", self.version_snapshot(start_ver), self.version_snapshot(next_ver) ]
+            inc_cmd += ["|"]
+            inc_cmd += hostcmd(recv_host, "zfs", "recv", "-u", self.version_fs(recv_parent_fs, next_ver))
+            runshell(*inc_cmd)
+            start_ver = next_ver
 
 ###########################################################################
 # commands
@@ -242,10 +266,10 @@ def cmd_list(args):
     """list command"""
     debug("list {0}".format(args))
     streamlines = Streamline.get(None if len(args) < 1 else args[0])
-    for name in sorted(streamlines.iterkeys()):
+    for name in sorted(streamlines):
         s = streamlines[name]
-        for v in sorted(s.versions, key=int):
-            print(s.snapshot_name(v))
+        for v in s.versions:
+            print(s.version_snapshot(v))
 cmd_list.usage = "list [[user@]host]"
 commands["list"] = cmd_list
 
@@ -287,15 +311,16 @@ def cmd_tag(args):
                     local_streamlines = Streamline.get(None)
                     s = local_streamlines.get(name)
                     if s is not None:
-                        version = int(s.versions[-1]) + 1
-                        debug("using version {0} (last version {1})".format(version, s.versions[-1]))
+                        last_ver = s.last_version()
+                        version = int(last_ver) + 1
+                        debug("using version {0} (last version {1})".format(version, last_ver))
     if name is None or version is None:
         print("""Error: Failed to detect streamline name and version from filesystem {0}
 Please specify streamline name with -n option
 """.format(fs), file=sys.stderr)
         usage(cmd_tag)
 
-    cmd = ["zfs", "snapshot", Streamline._snapshot_name(fs, name, version)]
+    cmd = ["zfs", "snapshot", Streamline.snapshot_name(fs, name, version)]
     runshell(*cmd)
 
 cmd_tag.usage = "tag [-n [name:]version] <filesystem|container-id>"
@@ -308,19 +333,19 @@ def cmd_pull(args):
         usage(cmd_pull)
     remote_host = args[0] if args[0] != "local" else None
     if args[1][-1] == "/":
-        local_fs = args[1]
+        parent_fs = args[1]
         name = None
     else:
-        local_fs = os.path.dirname(args[1])
+        parent_fs = os.path.dirname(args[1])
         name = os.path.basename(args[1])
-    debug("remote_host: {0}, local_fs: {1}, name: {2}".format(remote_host, local_fs, name))
+    debug("remote_host: {0}, parent_fs: {1}, name: {2}".format(remote_host, parent_fs, name))
 
     local_streamlines = Streamline.get(None)
     for s in Streamline.get(remote_host).itervalues():
         if name is not None and s.name != name:
             continue
-        s.pull(remote_host, local_fs, local_streamlines.get(s.name))
-cmd_pull.usage = "pull <[user@]host | local> <fs/[name]>"
+        s.sync(local_streamlines.get(s.name), remote_host, None, parent_fs)
+cmd_pull.usage = "pull <[user@]host | local> <parent-fs/[name]>"
 commands["pull"] = cmd_pull
 
 def cmd_push(args):
@@ -333,16 +358,16 @@ def cmd_push(args):
         print("Error: Invalid remote specification\n", file=sys.stderr)
         usage(cmd_push)
     remote_host = m.group(2)
-    remote_fs = m.group(3)
+    parent_fs = m.group(3)
     name = None if len(args) < 2 else args[1]
-    debug("remote_host: {0}, remote_fs: {1}, name: {2}".format(remote_host, remote_fs, name))
+    debug("remote_host: {0}, parent_fs: {1}, name: {2}".format(remote_host, parent_fs, name))
 
     remote_streamlines = Streamline.get(remote_host)
     for s in Streamline.get(None).itervalues():
         if name is not None and s.name != name:
             continue
-        s.push(remote_host, remote_fs, remote_streamlines.get(s.name))
-cmd_push.usage = "push <[[user@]host:]fs> [name]"
+        s.sync(remote_streamlines.get(s.name), None, remote_host, parent_fs)
+cmd_push.usage = "push <[[user@]host:]parent-fs> [name]"
 commands["push"] = cmd_push
 
 def usage(cmd=None):
@@ -357,7 +382,7 @@ Options:
 -s	use sudo when executing remote commands
 
 Commands:""".format(name=name), file=sys.stderr)
-        for c in sorted(commands.iterkeys()):
+        for c in sorted(commands):
             print("{usage}".format(name=name, usage=commands[c].usage))
     else:
         print("Usage: {name} {usage}".format(name=name, usage=cmd.usage))
