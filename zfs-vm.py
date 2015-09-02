@@ -145,7 +145,9 @@ class Streamline:
 
     def version_fs(self, parent_fs, version):
         """build version fs name"""
-        return os.path.join(parent_fs, os.path.basename(self.versions[version]))
+        if parent_fs is not None:
+            return os.path.join(parent_fs, os.path.basename(self.versions[version]))
+        return self.versions[version]
 
     @staticmethod
     def snapshot_name(fs, name, version):
@@ -214,7 +216,6 @@ class Streamline:
         if not self.versions:
             debug("empty version list")
             return
-
         debug("self.versions: {0}".format(self.versions))
 
         cmd = hostcmd(send_host, "zfs", "send", "-p")
@@ -260,6 +261,34 @@ class Streamline:
             runshell(*inc_cmd)
             start_ver = next_ver
 
+def do_sync(cmd, args):
+    try:
+        opts, args = getopt.getopt(args, "n:")
+    except getopt.GetoptError as err:
+        usage(cmd, err)
+    name = None
+    for o, a in opts:
+        if o == "-n":
+            name = a
+    if len(args) < 1:
+        usage(cmd_pull)
+    remote_host = args[0] if args[0] != "local" else None
+    parent_fs = args[1] if len(args) > 1 else None
+    debug("remote_host: {0}, parent_fs: {1}, name: {2}".format(remote_host, parent_fs, name))
+
+    if cmd == cmd_push:
+        send_host = None
+        recv_host = remote_host
+    else:
+        send_host = remote_host
+        recv_host = None
+
+    recv_streamlines = Streamline.get(recv_host)
+    for s in Streamline.get(send_host).itervalues():
+        if name is not None and s.name != name:
+            continue
+        s.sync(recv_streamlines.get(s.name), send_host, recv_host, parent_fs)
+
 ###########################################################################
 # commands
 def cmd_list(args):
@@ -273,14 +302,27 @@ def cmd_list(args):
 cmd_list.usage = "list [[user@]host]"
 commands["list"] = cmd_list
 
+def cmd_pull(args):
+    """pull command"""
+    debug("pull {0}".format(args))
+    do_sync(cmd_pull, args)
+cmd_pull.usage = "pull [-n name] [user@]host [local-parent-fs]"
+commands["pull"] = cmd_pull
+
+def cmd_push(args):
+    """push command"""
+    debug("push {0}".format(args))
+    do_sync(cmd_push, args)
+cmd_push.usage = "push [-n name] [user@]host [remote-parent-fs]"
+commands["push"] = cmd_push
+
 def cmd_tag(args):
     """tag command"""
     debug("tag {0}".format(args))
     try:
         opts, args = getopt.getopt(args, "n:")
     except getopt.GetoptError as err:
-        print(str(err), file=sys.stderr)
-        usage(cmd_tag)
+        usage(cmd_tag, err)
     version = None
     for o, a in opts:
         if o == "-n":
@@ -315,65 +357,22 @@ def cmd_tag(args):
                         version = int(last_ver) + 1
                         debug("using version {0} (last version {1})".format(version, last_ver))
     if name is None or version is None:
-        print("""Error: Failed to detect streamline name and version from filesystem {0}
-Please specify streamline name with -n option
-""".format(fs), file=sys.stderr)
-        usage(cmd_tag)
+        usage(cmd_tag, """Failed to detect streamline name and version from filesystem {0}
+Please specify streamline name with -n option""".format(fs))
 
     cmd = ["zfs", "snapshot", Streamline.snapshot_name(fs, name, version)]
     runshell(*cmd)
 
-cmd_tag.usage = "tag [-n [name:]version] <filesystem|container-id>"
+cmd_tag.usage = "tag [-n [name:]version] filesystem|container-id"
 commands["tag"] = cmd_tag
 
-def cmd_pull(args):
-    """pull command"""
-    debug("pull {0}".format(args))
-    if len(args) < 2:
-        usage(cmd_pull)
-    remote_host = args[0] if args[0] != "local" else None
-    if args[1][-1] == "/":
-        parent_fs = args[1]
-        name = None
-    else:
-        parent_fs = os.path.dirname(args[1])
-        name = os.path.basename(args[1])
-    debug("remote_host: {0}, parent_fs: {1}, name: {2}".format(remote_host, parent_fs, name))
-
-    local_streamlines = Streamline.get(None)
-    for s in Streamline.get(remote_host).itervalues():
-        if name is not None and s.name != name:
-            continue
-        s.sync(local_streamlines.get(s.name), remote_host, None, parent_fs)
-cmd_pull.usage = "pull <[user@]host | local> <parent-fs/[name]>"
-commands["pull"] = cmd_pull
-
-def cmd_push(args):
-    """push command"""
-    debug("push {0}".format(args))
-    if len(args) < 1:
-        usage(cmd_push)
-    m = re.match(r"((.*):)?([^:]+)", args[0])
-    if m is None:
-        print("Error: Invalid remote specification\n", file=sys.stderr)
-        usage(cmd_push)
-    remote_host = m.group(2)
-    parent_fs = m.group(3)
-    name = None if len(args) < 2 else args[1]
-    debug("remote_host: {0}, parent_fs: {1}, name: {2}".format(remote_host, parent_fs, name))
-
-    remote_streamlines = Streamline.get(remote_host)
-    for s in Streamline.get(None).itervalues():
-        if name is not None and s.name != name:
-            continue
-        s.sync(remote_streamlines.get(s.name), None, remote_host, parent_fs)
-cmd_push.usage = "push <[[user@]host:]parent-fs> [name]"
-commands["push"] = cmd_push
-
-def usage(cmd=None):
+def usage(cmd=None, error=None):
     """show usage and exit
 :param cmd: command to show usage for (None - show command list)
 :type cmd: command function"""
+    if error is not None:
+        print("Error: {0}\n".format(error), file=sys.stderr)
+
     name = os.path.basename(sys.argv[0])
     if cmd is None:
         print("""Usage: {name} [-s] <command> [args...]
@@ -396,8 +395,7 @@ def main(args):
     try:
         opts, args = getopt.getopt(args[1:], "dhs")
     except getopt.GetoptError as err:
-        print(str(err), file=sys.stderr)
-        usage()
+        usage(error=err)
 
     global use_debug, use_sudo
     for o, a in opts:
