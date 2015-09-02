@@ -35,7 +35,6 @@ def hostcmd(host, *args):
         if use_sudo:
             cmd += ["sudo"]
     cmd += args
-    debug("hostcmd: {0}".format(' '.join(cmd)))
     return cmd
 
 def runcmd(host, *args):
@@ -360,8 +359,10 @@ def cmd_tag(args):
         usage(cmd_tag, """Failed to detect streamline name and version from filesystem {0}
 Please specify streamline name with -n option""".format(fs))
 
-    cmd = ["zfs", "snapshot", Streamline.snapshot_name(fs, name, version)]
+    snapshot_name = Streamline.snapshot_name(fs, name, version)
+    cmd = ["zfs", "snapshot", snapshot_name]
     runshell(*cmd)
+    print("Tagged {0}".format(snapshot_name))
 
 cmd_tag.usage = "tag [-n [name:]version] filesystem|container-id"
 commands["tag"] = cmd_tag
