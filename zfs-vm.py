@@ -63,7 +63,7 @@ def runshell(*args):
         exit(1)
 
 #
-# Iterate over possible incremental send/recv versions
+# Iterate over possible incremental snapshot versions
 #
 # If the versions in src are:
 # fs1@1, fs1@2, fs1@3, fs1@4, fs2@5, fs2@6, fs2@7, fs3@8, fs3@9
@@ -217,7 +217,7 @@ class Streamline:
             return
         debug("self.versions: {0}".format(self.versions))
 
-        cmd = hostcmd(send_host, "zfs", "send", "-p")
+        cmd = hostcmd(send_host, "zfs", "send", "-p", "-P")
         if use_debug:
             cmd += ["-v"]   # verbose
 
@@ -228,7 +228,7 @@ class Streamline:
             cmd_base = copy(cmd)
             cmd_base += [ self.version_snapshot(base_ver) ]
             cmd_base += ["|"]
-            cmd_base += hostcmd(recv_host, "zfs", "recv", "-u", "-F", self.version_fs(recv_parent_fs, base_ver))
+            cmd_base += hostcmd(recv_host, "zfs", "recv", "-v", self.version_fs(recv_parent_fs, base_ver))
             runshell(*cmd_base)
 
             s = Streamline(self.name)
@@ -256,7 +256,7 @@ class Streamline:
             inc_cmd = copy(cmd)
             inc_cmd += ["-I", self.version_snapshot(start_ver), self.version_snapshot(next_ver) ]
             inc_cmd += ["|"]
-            inc_cmd += hostcmd(recv_host, "zfs", "recv", "-u", self.version_fs(recv_parent_fs, next_ver))
+            inc_cmd += hostcmd(recv_host, "zfs", "recv", "-v", self.version_fs(recv_parent_fs, next_ver))
             runshell(*inc_cmd)
             start_ver = next_ver
 
