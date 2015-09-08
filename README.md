@@ -1,4 +1,4 @@
-zfs-vm is an utility for syncing ZFS snapshots of VM/container filesystem images.
+zfs-vm is an utility for syncing ZFS snapshots of VM/container filesystems.
 
 Snapshot naming
 ---------------
@@ -7,7 +7,7 @@ Current version assumes that ZFS snapshot names have the following format:
 
 	@zfs-vm:streamline:version
 
-where streamline is a VM/container filesystem image name
+where streamline is a VM/container filesystem name
 and version is a number that identifies the snapshot version.
 
 Examples:
@@ -21,7 +21,7 @@ Examples:
 "ubuntu-12.04" snapshot v28
 
 zfs-vm.py uses streamline name to identify which snapshots of different ZFS
-filesystems are supposed to be the snapshot of the same VM/container image.
+filesystems are supposed to be the snapshot of the same VM/container filesystem.
 Version numbers are expected to be monotonically increasing.
 
 Commands
