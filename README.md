@@ -23,29 +23,27 @@ Version numbers are expected to be monotonically increasing.
 Commands
 --------
 
-list [[user@]host]
+	list [[user@]host]
 
-	List zfs-vm snapshots on specified host (localhost by default)
+List zfs-vm snapshots on specified host (localhost by default)
 
-pull [-n name] [-d local-dest-fs] [user@]host
-
-	Pull snapshots from specified host and put them to "local-parent-fs"
-
+	pull [-n name] [-d local-dest-fs] [user@]host
 	-n - pull only snapshots with the specified streamlne name
 	-d - specify destination parent fs on remote
 
-push [-n name] [-d remote-dest-fs] [user@]host
+Pull snapshots from specified host and put them to "local-parent-fs"
 
-	Push snapshots to specified host and put them to "remote-parent-fs"
-
+	push [-n name] [-d remote-dest-fs] [user@]host
 	-n - pull only snapshots with the specified streamlne name
 	-d - specify destination parent fs on remote
 
-tag [-n [name:]version] filesystem|container-id
+Push snapshots to specified host and put them to "remote-parent-fs"
 
-	Create a snapshot of specified filesystem.
-	If a filesystem was cloned from zfs-vm snapshot the streamline name
-	and version are detected automatically.
+	tag [-n [name:]version] filesystem|container-id
+
+Create a snapshot of specified filesystem.
+If a filesystem was cloned from zfs-vm snapshot the streamline name
+and version are detected automatically.
 
 Options
 -------
