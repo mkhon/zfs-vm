@@ -5,16 +5,20 @@ Snapshot naming
 
 Current version assumes that ZFS snapshot names have the following format:
 
-@zfs-vm:streamline:version
+	@zfs-vm:streamline:version
 
 where streamline is a VM/container filesystem image name
 and version is a number that identifies the snapshot version.
 
 Examples:
 
-@zfs-vm:debian-7:1		- "debian-7" snapshot v1
+	@zfs-vm:debian-7:1
 
-@zfs-vm:ubuntu-12.04:28		- "ubuntu-12.04" snapshot v28
+"debian-7" snapshot v1
+
+	@zfs-vm:ubuntu-12.04:28
+
+"ubuntu-12.04" snapshot v28
 
 zfs-vm.py uses streamline name to identify which snapshots of different ZFS
 filesystems are supposed to be the snapshot of the same VM/container image.
