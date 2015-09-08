@@ -4,6 +4,7 @@ Snapshot naming
 ---------------
 
 Current version assumes that ZFS snapshot names have the following format:
+
 @zfs-vm:streamline:version
 
 Where streamline is a VM/container filesystem image name
