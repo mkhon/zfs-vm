@@ -15,6 +15,7 @@ ZFS_VM_PREFIX = "zfs-vm"
 commands = {}
 use_sudo = False
 use_debug = False
+use_verbose = False
 
 def debug(s):
     """print debug message
@@ -218,17 +219,21 @@ class Streamline:
         debug("self.versions: {0}".format(self.versions))
 
         cmd = hostcmd(send_host, "zfs", "send", "-p", "-P")
-        if use_debug:
-            cmd += ["-v"]   # verbose
+        if use_verbose:
+            cmd += ["-v"]
 
         # push base version if no versions on receiver
         if s is None:
             base_ver = self.first_version()
             debug("syncing base version {0}".format(base_ver))
             cmd_base = copy(cmd)
-            cmd_base += [ self.version_snapshot(base_ver) ]
+            cmd_base += [self.version_snapshot(base_ver)]
             cmd_base += ["|"]
-            cmd_base += hostcmd(recv_host, "zfs", "recv", "-v", self.version_fs(recv_parent_fs, base_ver))
+            cmd_base += hostcmd(recv_host, "zfs", "recv")
+            if use_verbose:
+                cmd_base += ["-v"]
+            cmd_base += [self.version_fs(recv_parent_fs, base_ver)]
+
             runshell(*cmd_base)
 
             s = Streamline(self.name)
@@ -254,9 +259,12 @@ class Streamline:
         # perform incremental send/recv
         for next_ver in VersionIterator(self, start_ver):
             inc_cmd = copy(cmd)
-            inc_cmd += ["-I", self.version_snapshot(start_ver), self.version_snapshot(next_ver) ]
+            inc_cmd += ["-I", self.version_snapshot(start_ver), self.version_snapshot(next_ver)]
             inc_cmd += ["|"]
-            inc_cmd += hostcmd(recv_host, "zfs", "recv", "-v", self.version_fs(recv_parent_fs, next_ver))
+            inc_cmd += hostcmd(recv_host, "zfs", "recv")
+            if use_verbose:
+                inc_cmd += ["-v"]
+            inc_cmd += [self.version_fs(recv_parent_fs, next_ver)]
             runshell(*inc_cmd)
             start_ver = next_ver
 
@@ -377,9 +385,11 @@ def usage(cmd=None, error=None):
 
     name = os.path.basename(sys.argv[0])
     if cmd is None:
-        print("""Usage: {name} [-s] <command> [args...]
+        print("""Usage: {name} [-d] [-s] <command> [args...]
 
 Options:
+-d  debug
+-v  verbose send/recv
 -s	use sudo when executing remote commands
 
 Commands:""".format(name=name), file=sys.stderr)
@@ -395,11 +405,11 @@ def main(args):
     """main function"""
     # parse command-line options
     try:
-        opts, args = getopt.getopt(args[1:], "dhs")
+        opts, args = getopt.getopt(args[1:], "dhsv")
     except getopt.GetoptError as err:
         usage(error=err)
 
-    global use_debug, use_sudo
+    global use_sudo, use_debug, use_verbose
     for o, a in opts:
         if o == "-d":
             use_debug = True
@@ -407,6 +417,8 @@ def main(args):
             usage()
         elif o == "-s":
             use_sudo = True
+        elif o == "-v":
+            use_verbose = True
 
     if len(args) < 1:
         usage()
