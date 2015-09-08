@@ -95,7 +95,7 @@ TODO
 ----
 
 1. zfs-vm.py may identify the streamlines and the version sequence from the ZFS instead
-of relying on snapshot naming (zdb, zfs send -vv can supposedly be used for that)
+of relying on snapshot naming (zdb, zfs send -vv can supposedly be used for that).
 
 2. zfs-vm.py should support recursive behaviour for tagging/sending/receiving more than
-one FS
+one FS.
