@@ -262,17 +262,18 @@ class Streamline:
 
 def do_sync(cmd, args):
     try:
-        opts, args = getopt.getopt(args, "n:")
+        opts, args = getopt.getopt(args, "n:d:")
     except getopt.GetoptError as err:
         usage(cmd, err)
-    name = None
+    name, parent_fs = None, None
     for o, a in opts:
         if o == "-n":
             name = a
+        elif o == "-d":
+            parent_fs = a
     if len(args) < 1:
         usage(cmd_pull)
     remote_host = args[0] if args[0] != "local" else None
-    parent_fs = args[1] if len(args) > 1 else None
     debug("remote_host: {0}, parent_fs: {1}, name: {2}".format(remote_host, parent_fs, name))
 
     if cmd == cmd_push:
@@ -305,14 +306,14 @@ def cmd_pull(args):
     """pull command"""
     debug("pull {0}".format(args))
     do_sync(cmd_pull, args)
-cmd_pull.usage = "pull [-n name] [user@]host [local-parent-fs]"
+cmd_pull.usage = "pull [-n name] [-d local-dest-fs] [user@]host"
 commands["pull"] = cmd_pull
 
 def cmd_push(args):
     """push command"""
     debug("push {0}".format(args))
     do_sync(cmd_push, args)
-cmd_push.usage = "push [-n name] [user@]host [remote-parent-fs]"
+cmd_push.usage = "push [-n name] [-d remote-dest-fs] [user@]host"
 commands["push"] = cmd_push
 
 def cmd_tag(args):
