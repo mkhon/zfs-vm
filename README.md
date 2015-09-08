@@ -29,19 +29,19 @@ Commands
 
 	list [[user@]host]
 
-List zfs-vm snapshots on specified host (localhost by default)
+List zfs-vm snapshots on specified host (localhost by default).
 
 	pull [-n name] [-d local-dest-fs] [user@]host
 	-n - pull only snapshots with the specified streamlne name
 	-d - specify destination parent fs on remote
 
-Pull snapshots from specified host and put them to "local-parent-fs"
+Pull snapshots from specified host and put them to "local-parent-fs".
 
 	push [-n name] [-d remote-dest-fs] [user@]host
 	-n - pull only snapshots with the specified streamlne name
 	-d - specify destination parent fs on remote
 
-Push snapshots to specified host and put them to "remote-parent-fs"
+Push snapshots to specified host and put them to "remote-parent-fs".
 
 	tag [-n [name:]version] filesystem|container-id
 
