@@ -57,30 +57,30 @@ zfs-vm.py has the following global options:
 
 Examples:
 
-zfs-vm.py list
+	zfs-vm.py list
 
-	list snapshots on localhost
+List snapshots on localhost.
 
-zfs-vm.py -s list fjoe@remote-host
+	zfs-vm.py -s list fjoe@remote-host
 
-	list snapshots on remote-host
+List snapshots on remote-host.
 
-zfs-vm.py tag -n debian-7:1 pool/src/OpenVZ/Instance/1007
+	zfs-vm.py tag -n debian-7:1 pool/src/OpenVZ/Instance/1007
 
-	create a snapshot of pool/src/OpenVZ/Instance/1007
-	the name of streamline is debian-7, version 1
+Create a snapshot of pool/src/OpenVZ/Instance/1007
+the name of streamline is debian-7, version 1.
 
-zfs-vm.py -s push fjoe@remote-host
+	zfs-vm.py -s push fjoe@remote-host
 
-	push all snapshots to remote-host
+Push all snapshots to remote-host.
 
-zfs-vm.py -s push -d tank/vm fjoe@remote-host
+	zfs-vm.py -s push -d tank/vm fjoe@remote-host
 
-	push all snapshots to remote-host and put them to tank/vm
+Push all snapshots to remote-host and put them to tank/vm.
 
-zfs-vm.py -s pull fjoe@remote-host
+	zfs-vm.py -s pull fjoe@remote-host
 
-	pull all snapshots from remote-host
+Pull all snapshots from remote-host.
 
 Push/pull
 ----------
