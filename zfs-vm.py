@@ -130,10 +130,20 @@ class VersionIterator:
             raise StopIteration
         return self.versions.pop(0)
 
-class Streamline:
+class Snapshot:
+    """Filesystem snapshot"""
     def __init__(self, name):
         self.name = name
-        self.versions = {}
+        self.guid = None
+        self.createtxg = 0
+
+class Streamline:
+    """Streamline is a filesystem with snapshots"""
+    def __init__(self, name, origin):
+        self.name = name
+        self.origin = origin
+        self.snapshots = {}
+        self.synced = False
 
     def first_version(self):
         """get first version number"""
@@ -143,43 +153,6 @@ class Streamline:
         """get last version number"""
         return reversed(self.versions.keys()).next()
 
-    def version_fs(self, parent_fs, version):
-        """build version fs name"""
-        if parent_fs is not None:
-            return os.path.join(parent_fs, os.path.basename(self.versions[version]))
-        return self.versions[version]
-
-    @staticmethod
-    def snapshot_name(fs, name, version):
-        return "{fs}@{prefix}:{name}:{version}".format(fs=fs, prefix=ZFS_VM_PREFIX, name=name, version=version)
-
-    def version_snapshot(self, v):
-        return self.snapshot_name(self.versions[v], self.name, v)
-
-    @staticmethod
-    def parse_name(snapshot):
-        """parse streamline name and version from snapshot name
-:param snapshot: snapshot name
-:type snapshot: str
-:returns: a tuple (fs, name, version) or None if not a zfs-vm snapshot"""
-        try:
-            fs, snapname = snapshot.split("@")
-        except ValueError:
-            print("Warning: Invalid snapshot name {0} (missing '@')".format(snapshot))
-            return None
-        try:
-            prefix, name, version = snapname.split(":")
-        except ValueError:
-            debug("Not a zfs-vm snapshot {0} (missing ':' in snapname)".format(snapshot))
-            return None
-        if prefix != ZFS_VM_PREFIX:
-            debug("Not a zfs-vm snapshot {0} (prefix is not {1})".format(snapshot, ZFS_VM_PREFIX))
-            return None
-        if not version.isdigit():
-            debug("Not a zfs-vm snapshot {0} (version is not a number)".format(snapshot))
-            return None
-        return fs, name, version
-
     @staticmethod
     def get(host):
         """fetch streamlines from host
@@ -187,22 +160,44 @@ class Streamline:
 :type host: str
 :returns: streamlines on specified host
 :rtype: dict of Streamlines (by name)"""
-        streamlines = {}
 
-        for l in runcmd(host, "zfs", "list", "-H", "-t", "snapshot", "-o", "name").split("\n"):
+        # get filesystem origins
+        origins = {}
+        for l in runcmd(host, "zfs", "get", "-H", "-p", "-o", "name,property,value", "-t", "filesystem", "origin").split("\n"):
+            # pool/vm/Root3   origin  pool/vm/Root2@zfs-vm:foo:6
             if not l:
                 continue
             debug(l)
-            n = Streamline.parse_name(l)
-            if n is None:
+            (name, prop, value) = l.split("\t")
+            if value == "-":
+                continue    # empty value
+
+            origins[name] = value
+
+        # get streamlines
+        streamlines = {}
+        for l in runcmd(host, "zfs", "get", "-H", "-p", "-o", "name,property,value", "-t", "snapshot", "guid,createtxg").split("\n"):
+            # pool/src/OpenVZ@pool-src-OpenVZ-20150529-Initial  createtxg   1379    -
+            if not l:
                 continue
-            (fs, name, version) = n
-            s = streamlines.get(name)
-            if s is None:
-                s = streamlines[name] = Streamline(name)
-            s.versions[version] = fs
+            debug(l)
+            (name, propname, value) = l.split("\t")
+            if value == "-":
+                continue    # empty value
+
+            fs = name.split("@")[0]
+            if streamlines.get(fs) is None:
+                streamlines[fs] = Streamline(fs, origins.get(fs))
+            s = streamlines[fs]
+            if propname == "guid":
+                guid = value
+                s.snapshots[guid] = Snapshot(name)
+            setattr(s.snapshots[guid], propname, value)
+
+        # sort snapshots by "createtxg"
         for s in streamlines.itervalues():
-            s.versions = collections.OrderedDict(sorted(s.versions.items(), key=lambda x: int(x[0])))
+            s.snapshots = collections.OrderedDict(
+                sorted(s.snapshots.items(), key=lambda x: int(x[1].createtxg)))
         return streamlines
 
     def __find_common(self, s):
@@ -305,8 +300,19 @@ def cmd_list(args):
     streamlines = Streamline.get(None if len(args) < 1 else args[0])
     for name in sorted(streamlines):
         s = streamlines[name]
-        for v in s.versions:
-            print(s.version_snapshot(v))
+
+        # print streamline
+        l = s.name
+        if s.origin is not None:
+            l += " (origin: {0})".format(s.origin)
+        print(l)
+
+        # print snapshots
+        for snap in s.snapshots.itervalues():
+            l = "\t{0}".format(snap.name)
+            if use_debug:
+                l += " (createtxg: {0}, guid: {1})".format(snap.createtxg, snap.guid)
+            print(l)
 cmd_list.usage = "list [[user@]host]"
 commands["list"] = cmd_list
 
