@@ -324,58 +324,6 @@ def cmd_push(args):
 cmd_push.usage = "push [-n name] [-d remote-dest-fs] [user@]host"
 commands["push"] = cmd_push
 
-def cmd_tag(args):
-    """tag command"""
-    debug("tag {0}".format(args))
-    try:
-        opts, args = getopt.getopt(args, "n:")
-    except getopt.GetoptError as err:
-        usage(cmd_tag, err)
-    version = None
-    for o, a in opts:
-        if o == "-n":
-            version = a
-    if len(args) < 1:
-        usage(cmd_tag)
-    fs = args[0]
-
-    name = None
-    if version is not None:
-        try:
-            name, version = version.split(":")
-        except ValueError:
-            pass
-    if name is None:
-        # try to detect name/version from fs
-        cmd = ["zfs", "get", "-H", "-o", "value", "origin", fs]
-        origin = runcmd(None, *cmd).split("\n")[0]
-        debug("filesystem {0}: origin {1}".format(fs, origin))
-        if origin == "-":
-            name = None
-        else:
-            n = Streamline.parse_name(origin)
-            if n is not None:
-                name = n[1]
-                debug("using streamline name {0}".format(name))
-                if version is None:
-                    local_streamlines = Streamline.get(None)
-                    s = local_streamlines.get(name)
-                    if s is not None:
-                        last_ver = s.last_version()
-                        version = int(last_ver) + 1
-                        debug("using version {0} (last version {1})".format(version, last_ver))
-    if name is None or version is None:
-        usage(cmd_tag, """Failed to detect streamline name and version from filesystem {0}
-Please specify streamline name with -n option""".format(fs))
-
-    snapshot_name = Streamline.snapshot_name(fs, name, version)
-    cmd = ["zfs", "snapshot", snapshot_name]
-    runshell(*cmd)
-    print("Tagged {0}".format(snapshot_name))
-
-cmd_tag.usage = "tag [-n [name:]version] filesystem|container-id"
-commands["tag"] = cmd_tag
-
 def usage(cmd=None, error=None):
     """show usage and exit
 :param cmd: command to show usage for (None - show command list)
