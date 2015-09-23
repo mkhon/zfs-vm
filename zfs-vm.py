@@ -2,14 +2,10 @@
 from __future__ import print_function
 import os, sys
 import getopt
-import re
 import subprocess
 import pipes
 import collections
 from copy import copy
-
-# constants
-ZFS_VM_PREFIX = "zfs-vm"
 
 # globals
 commands = {}
@@ -63,87 +59,21 @@ def runshell(*args):
         print("Command returned exit code {0}".format(err.returncode), file=sys.stderr)
         exit(1)
 
-#
-# Iterate over possible incremental snapshot versions
-#
-# If the versions in src are:
-# fs1@1, fs1@2, fs1@3, fs1@4, fs2@5, fs2@6, fs2@7, fs3@8, fs3@9
-# and start_ver is 2 the iterator returns
-# - fs1@4 (last version in fs1)
-# - fs2@5 (first version in fs2)
-# - fs2@7 (last version in fs2)
-# - fs3@8 (first version in fs3)
-# - fs3@9 (last version in fs3)
-class VersionIterator:
-    def __init__(self, s, start_ver):
-        """Initialize version iterator
-:param s: streamline to iterate over
-:type s: Streamline
-:param start_ver: start version
-:type start_ver: str"""
-        self.s = s
-        self.start_ver = start_ver
-        self.versions = []
-        self.i = None
-        self.prev_ver = None
-        self.next_ver = None
- 
-    def __iter__(self):
-        return self
-
-    def next(self):
-        if self.i is None:
-            # initialize: find start position
-            self.i = self.s.versions.iterkeys()
-            while True:
-                self.prev_ver = self.i.next()
-                if self.prev_ver == self.start_ver:
-                    self.next_ver = self.i.next()
-                    break
-
-        if len(self.versions) == 0:
-            # find more versions
-            if self.next_ver is None:
-                raise StopIteration
-
-            while True:
-                try:
-                    if self.s.versions[self.prev_ver] != self.s.versions[self.next_ver]:
-                        # different fs found
-                        if self.prev_ver != self.start_ver:
-                            self.versions.append(self.prev_ver)
-                        self.versions.append(self.next_ver)
-
-                        self.start_ver = self.prev_ver = self.next_ver
-                        self.next_ver = self.i.next()
-                        break
-
-                    self.prev_ver = self.next_ver
-                    self.next_ver = self.i.next()
-                except StopIteration:
-                    if self.next_ver != self.start_ver:
-                        self.versions.append(self.next_ver)
-                    self.next_ver = None
-                    break
-
-        if len(self.versions) == 0:
-            raise StopIteration
-        return self.versions.pop(0)
-
 class Snapshot:
     """Filesystem snapshot"""
     def __init__(self, name):
-        self.name = name
-        self.guid = None
-        self.createtxg = 0
+        self.name = name            # snapshot name
+        self.guid = None            # snapshot guid
+        self.createtxg = 0          # snapshot create txn
 
 class Streamline:
     """Streamline is a filesystem with snapshots"""
     def __init__(self, name, origin):
-        self.name = name
-        self.origin = origin
-        self.snapshots = {}
-        self.synced = False
+        self.name = name            # filesystem name
+        self.origin = origin        # origin snapshot
+        self.parent = None          # parent (origin) streamline
+        self.snapshots = {}         # streamline snapshots
+        self.processed = False
 
     def first_version(self):
         """get first version number"""
@@ -196,16 +126,11 @@ class Streamline:
 
         # sort snapshots by "createtxg"
         for s in streamlines.itervalues():
+            if s.origin:
+                s.parent = streamlines.get(s.origin.split("@")[0])
             s.snapshots = collections.OrderedDict(
                 sorted(s.snapshots.items(), key=lambda x: int(x[1].createtxg)))
         return streamlines
-
-    def __find_common(self, s):
-        """find highest common version with b
-:type b: Streamline
-:returns: highest common version or None
-:rtype: str"""
-        return None
 
     def sync(self, s, send_host, recv_host, recv_parent_fs):
         if not self.versions:
@@ -297,9 +222,22 @@ def do_sync(cmd, args):
 def cmd_list(args):
     """list command"""
     debug("list {0}".format(args))
-    streamlines = Streamline.get(None if len(args) < 1 else args[0])
-    for name in sorted(streamlines):
-        s = streamlines[name]
+    try:
+        opts, args = getopt.getopt(args, "n:p")
+    except getopt.GetoptError as err:
+        usage(cmd_list, err)
+    name, list_deps = None, False
+    for o, a in opts:
+        if o == "-n":
+            name = a
+        elif o == "-p":
+            list_parents = True
+
+    def list_streamline(s):
+        if s.processed:
+            return
+        if s.parent is not None and list_parents:
+            list_streamline(s.parent)
 
         # print streamline
         l = s.name
@@ -310,10 +248,18 @@ def cmd_list(args):
         # print snapshots
         for snap in s.snapshots.itervalues():
             l = "\t{0}".format(snap.name)
-            if use_debug:
+            if use_verbose:
                 l += " (createtxg: {0}, guid: {1})".format(snap.createtxg, snap.guid)
             print(l)
-cmd_list.usage = "list [[user@]host]"
+
+        s.processed = True
+
+    streamlines = Streamline.get(None if len(args) < 1 else args[0])
+    for s in sorted(streamlines.values(), key=lambda x: x.name):
+        if name is not None and s.name != name:
+            continue
+        list_streamline(s)
+cmd_list.usage = "list [-n name] [-p] [[user@]host]"
 commands["list"] = cmd_list
 
 def cmd_pull(args):
