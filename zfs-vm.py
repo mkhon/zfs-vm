@@ -66,6 +66,11 @@ class Snapshot:
         self.guid = None            # snapshot guid
         self.createtxg = 0          # snapshot create txn
 
+class Streamlines(dict):
+    """dict of streamlines (key: name)"""
+    def __init__(self):
+        self.snapshots = {}         # guid -> Streamline
+
 class Streamline:
     """Streamline is a filesystem with snapshots"""
     def __init__(self, name, origin):
@@ -74,14 +79,6 @@ class Streamline:
         self.parent = None          # parent (origin) streamline
         self.snapshots = {}         # streamline snapshots
         self.processed = False
-
-    def first_version(self):
-        """get first version number"""
-        return self.versions.iterkeys().next()
-
-    def last_version(self):
-        """get last version number"""
-        return reversed(self.versions.keys()).next()
 
     @staticmethod
     def get(host):
@@ -105,7 +102,7 @@ class Streamline:
             origins[name] = value
 
         # get streamlines
-        streamlines = {}
+        streamlines = Streamlines()
         for l in runcmd(host, "zfs", "get", "-H", "-p", "-o", "name,property,value", "-t", "snapshot", "guid,createtxg").split("\n"):
             # pool/src/OpenVZ@pool-src-OpenVZ-20150529-Initial  createtxg   1379    -
             if not l:
@@ -130,6 +127,9 @@ class Streamline:
                 s.parent = streamlines.get(s.origin.split("@")[0])
             s.snapshots = collections.OrderedDict(
                 sorted(s.snapshots.items(), key=lambda x: int(x[1].createtxg)))
+            for snap in s.snapshots.itervalues():
+                streamlines.snapshots[snap.guid] = s
+
         return streamlines
 
     def sync(self, s, send_host, recv_host, recv_parent_fs):
@@ -226,7 +226,7 @@ def cmd_list(args):
         opts, args = getopt.getopt(args, "n:p")
     except getopt.GetoptError as err:
         usage(cmd_list, err)
-    name, list_deps = None, False
+    name, list_parents = None, False
     for o, a in opts:
         if o == "-n":
             name = a
