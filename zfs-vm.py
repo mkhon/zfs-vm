@@ -41,7 +41,9 @@ def runcmd(host, *args):
 :returns: command stdout
 :rtype: str"""
     try:
-        output = subprocess.check_output(hostcmd(host, *args))
+        cmd = hostcmd(host, *args)
+        debug("runcmd: {0}".format(cmd))
+        output = subprocess.check_output(cmd)
     except subprocess.CalledProcessError as err:
         print("Command returned exit code {0}".format(err.returncode), file=sys.stderr)
         exit(1)
@@ -66,22 +68,85 @@ class Snapshot:
         self.guid = None            # snapshot guid
         self.createtxg = 0          # snapshot create txn
 
-class Streamlines(dict):
-    """dict of streamlines (key: name)"""
-    def __init__(self):
-        self.snapshots = {}         # guid -> Streamline
-
 class Streamline:
     """Streamline is a filesystem with snapshots"""
     def __init__(self, name, origin):
         self.name = name            # filesystem name
         self.origin = origin        # origin snapshot
         self.parent = None          # parent (origin) streamline
-        self.snapshots = {}         # streamline snapshots
+        self.snapshots = {}         # guid -> snapshot
         self.processed = False
 
+    def first_snapshot(self):
+        """get first streamline snapshot"""
+        return next(self.snapshots.itervalues())
+
+    def last_snapshot(self):
+        """get last streamline snapshot"""
+        return self.snapshots[next(reversed(self.snapshots.keys()))]
+
+    def sync(self, send_streamlines, recv_streamlines, recv_parent_fs):
+        if not self.snapshots:
+            debug("empty snapshot list")
+            return
+        if self.processed:
+            debug("Streamline {0} is already synced, skipping".format(self.name))
+            return
+        #debug("self.snapshots: {0}".format(self.snapshots.keys()))
+
+        def sync_snapshot(snap, from_snap = None):
+            cmd = hostcmd(send_streamlines.host, "zfs", "send", "-p", "-P")
+            if use_verbose:
+                cmd += ["-v"]
+            if from_snap is not None:
+                cmd += ["-I", from_snap.name]
+            cmd += [snap.name]
+
+            cmd += ["|"]
+
+            cmd += hostcmd(recv_streamlines.host, "zfs", "recv", "-F", "-u")
+            if use_verbose:
+                cmd += ["-v"]
+            if recv_parent_fs is not None:
+                cmd += ["-d", recv_parent_fs]
+            else:
+                cmd += [snap.name.split("@")[0]]
+            runshell(*cmd)
+
+        # sync first snapshot
+        first_snap = self.first_snapshot()
+        if recv_streamlines.find_snapshot(first_snap) is None:
+            debug("first snapshot {0} (guid {1}) does not exist on receiver".format(
+                first_snap.name, first_snap.guid))
+            if self.parent is not None:
+                # sync from parent incrementally
+                self.parent.sync(send_streamlines, recv_streamlines, recv_parent_fs)
+                from_snap = self.parent.last_snapshot()
+            else:
+                # sync base version
+                from_snap = None
+            sync_snapshot(first_snap, from_snap)
+
+        # sync last snapshot
+        last_snap = self.last_snapshot()
+        if last_snap.guid != first_snap.guid and recv_streamlines.find_snapshot(last_snap) is None:
+            debug("last snapshot {0} (guid {1}) does not exist on receiver".format(
+                last_snap.name, last_snap.guid))
+            sync_snapshot(last_snap, first_snap)
+
+        self.processed = True
+
+class Streamlines(dict):
+    """dict of streamlines (key: name)"""
+    def __init__(self, host):
+        self.host = host            # streamlines host
+        self.snapshots = {}         # guid -> Streamline
+
+    def find_snapshot(self, snap):
+        return self.snapshots.get(snap.guid)
+
     @staticmethod
-    def get(host):
+    def list(host):
         """fetch streamlines from host
 :param host: host to fetch from (None if localhost)
 :type host: str
@@ -102,7 +167,7 @@ class Streamline:
             origins[name] = value
 
         # get streamlines
-        streamlines = Streamlines()
+        streamlines = Streamlines(host)
         for l in runcmd(host, "zfs", "get", "-H", "-p", "-o", "name,property,value", "-t", "snapshot", "guid,createtxg").split("\n"):
             # pool/src/OpenVZ@pool-src-OpenVZ-20150529-Initial  createtxg   1379    -
             if not l:
@@ -132,77 +197,21 @@ class Streamline:
 
         return streamlines
 
-    def sync(self, s, send_host, recv_host, recv_parent_fs):
-        if not self.versions:
-            debug("empty version list")
-            return
-        debug("self.versions: {0}".format(self.versions))
-
-        cmd = hostcmd(send_host, "zfs", "send", "-p", "-P")
-        if use_verbose:
-            cmd += ["-v"]
-
-        # push base version if no versions on receiver
-        if s is None:
-            base_ver = self.first_version()
-            debug("syncing base version {0}".format(base_ver))
-            cmd_base = copy(cmd)
-            cmd_base += [self.version_snapshot(base_ver)]
-            cmd_base += ["|"]
-            cmd_base += hostcmd(recv_host, "zfs", "recv")
-            if use_verbose:
-                cmd_base += ["-v"]
-            cmd_base += [self.version_fs(recv_parent_fs, base_ver)]
-
-            runshell(*cmd_base)
-
-            s = Streamline(self.name)
-            s.versions[base_ver] = self.version_fs(recv_parent_fs, base_ver)
-        else:
-            debug("versions: {0}".format(s.versions))
-
-        # find highest common version
-        for v in reversed(self.versions):
-            if v in s.versions:
-                start_ver = v
-                break
-        else:
-            print("No common versions found")
-            return
-
-        # check if nothing to do
-        last_ver = self.last_version()
-        if start_ver == last_ver:
-            print("Everything up-to-date")
-            return
-
-        # perform incremental send/recv
-        for next_ver in VersionIterator(self, start_ver):
-            inc_cmd = copy(cmd)
-            inc_cmd += ["-I", self.version_snapshot(start_ver), self.version_snapshot(next_ver)]
-            inc_cmd += ["|"]
-            inc_cmd += hostcmd(recv_host, "zfs", "recv")
-            if use_verbose:
-                inc_cmd += ["-v"]
-            inc_cmd += [self.version_fs(recv_parent_fs, next_ver)]
-            runshell(*inc_cmd)
-            start_ver = next_ver
-
 def do_sync(cmd, args):
     try:
         opts, args = getopt.getopt(args, "n:d:")
     except getopt.GetoptError as err:
         usage(cmd, err)
-    name, parent_fs = None, None
+    name, recv_parent_fs = None, None
     for o, a in opts:
         if o == "-n":
             name = a
         elif o == "-d":
-            parent_fs = a
+            recv_parent_fs = a
     if len(args) < 1:
         usage(cmd_pull)
     remote_host = args[0] if args[0] != "local" else None
-    debug("remote_host: {0}, parent_fs: {1}, name: {2}".format(remote_host, parent_fs, name))
+    debug("remote_host: {0}, name {1}, recv_parent_fs: {2}".format(remote_host, name, recv_parent_fs))
 
     if cmd == cmd_push:
         send_host = None
@@ -210,12 +219,13 @@ def do_sync(cmd, args):
     else:
         send_host = remote_host
         recv_host = None
+    send_streamlines = Streamlines.list(send_host)
+    recv_streamlines = Streamlines.list(recv_host)
 
-    recv_streamlines = Streamline.get(recv_host)
-    for s in Streamline.get(send_host).itervalues():
+    for s in send_streamlines.itervalues():
         if name is not None and s.name != name:
             continue
-        s.sync(recv_streamlines.get(s.name), send_host, recv_host, parent_fs)
+        s.sync(send_streamlines, recv_streamlines, recv_parent_fs)
 
 ###########################################################################
 # commands
@@ -254,7 +264,7 @@ def cmd_list(args):
 
         s.processed = True
 
-    streamlines = Streamline.get(None if len(args) < 1 else args[0])
+    streamlines = Streamlines.list(None if len(args) < 1 else args[0])
     for s in sorted(streamlines.values(), key=lambda x: x.name):
         if name is not None and s.name != name:
             continue
