@@ -6,10 +6,10 @@ import subprocess
 import pipes
 import collections
 import json
-from sets import Set
+import sets
 
 # globals
-commands = {}
+commands = collections.OrderedDict()
 use_sudo = False
 use_debug = False
 use_verbose = False
@@ -260,9 +260,9 @@ def do_container_cmd(cmd, args):
  
     vms = VM.list()
     if len(args) > 0:
-        ids = Set(args)
+        ids = sets.Set(args)
     elif process_all:
-        ids = Set(vms.iterkeys())
+        ids = sets.Set(vms.iterkeys())
     else:
         usage(cmd)
     for id in ids:
@@ -330,33 +330,68 @@ def cmd_push(args):
 cmd_push.usage = "push [-n name] [-d remote-dest-fs] [user@]host"
 commands["push"] = cmd_push
 
-def do_cmd_start(vm):
-    if vm["status"] == "stopped":
-        runcmd(None, "vzctl", "start", str(vm["ctid"]))
+def do_start(vm):
+    if not vm["status"] == "stopped":
+        return
+    runcmd(None, "vzctl", "start", str(vm["ctid"]))
 
 def cmd_start(args):
     """start command"""
     debug("start {}".format(args))
     do_container_cmd(cmd_start, args)
-cmd_start.do = do_cmd_start
-cmd_start.usage = """start [-a] [ctid..]
+cmd_start.do = do_start
+cmd_start.usage = """start [-a] [ctid...]
 
 -a  start all"""
 commands["start"] = cmd_start
 
-def do_cmd_stop(vm):
-    if vm["status"] == "running":
-        runcmd(None, "vzctl", "stop", str(vm["ctid"]))
+def do_stop(vm):
+    if not vm["status"] == "running":
+        return
+    runcmd(None, "vzctl", "stop", str(vm["ctid"]))
 
 def cmd_stop(args):
     """stop command"""
     debug("stop {}".format(args))
     do_container_cmd(cmd_stop, args)
-cmd_stop.do = do_cmd_stop
-cmd_stop.usage = """stop [-a] [ctid..]
+cmd_stop.do = do_stop
+cmd_stop.usage = """stop [-a] [ctid...]
 
 -a  stop all"""
 commands["stop"] = cmd_stop
+
+def do_suspend(vm):
+    if not vm["status"] == "running":
+        return
+    runcmd(None, "vzctl", "suspend", str(vm["ctid"]))
+
+def cmd_suspend(args):
+    """suspend command"""
+    debug("suspend {}".format(args))
+    do_container_cmd(cmd_suspend, args)
+cmd_suspend.do = do_suspend
+cmd_suspend.usage = """suspend [-a] [ctid...]
+
+-a  suspend all"""
+commands["suspend"] = cmd_suspend
+
+def do_resume(vm):
+    if not vm["status"] == "stopped":
+        return
+    dumpfile = "{}/Dump.{}".format(vm["dumpdir"], vm["ctid"])
+    if not os.path.isfile(dumpfile):
+        return
+    runcmd(None, "vzctl", "resume", str(vm["ctid"]))
+
+def cmd_resume(args):
+    """resume command"""
+    debug("resume {}".format(args))
+    do_container_cmd(cmd_resume, args)
+cmd_resume.do = do_resume
+cmd_resume.usage = """resume [-a] [ctid...]
+
+-a  resume all"""
+commands["resume"] = cmd_resume
 
 def usage(cmd=None, error=None):
     """show usage and exit
