@@ -432,25 +432,34 @@ def do_diff(vm, opts={}):
         return False
     snapname = opts.get("-s")
     if snapname:
-        snap = fs.find_snapshot(snapname, fuzzy=True)
-        if snap is None:
+        snapfrom = fs.find_snapshot(snapname, fuzzy=True)
+        if snapfrom is None:
             print("No snapshots like {} found for {}".format(snapname, fs.mountpoint), file=sys.stderr) 
+            sys.exit(1)
     else:
-        snap = fs.last_snapshot()
-        if snap is None:
+        snapfrom = fs.last_snapshot()
+        if snapfrom is None:
             print("{} does not have snapshots".format(fs.mountpoint), file=sys.stderr)
             sys.exit(1)
-    cmd = hostcmd(None, "zfs", "diff", "-F", "-t", snap.name, fs.name)
+    snapname = opts.get("-S")
+    snapto = None
+    if snapname:
+        snapto = fs.find_snapshot(snapname, fuzzy=True)
+        if snapto is None:
+            print("No snapshots like {} found for {}".format(snapname, fs.mountpoint), file=sys.stderr) 
+            sys.exit(1)
+    cmd = hostcmd(None, "zfs", "diff", "-F", "-t", snapfrom.name, fs.name if snapto is None else snapto.name)
     runshell(False, *cmd)
 
 def cmd_diff(args):
     """diff command"""
     debug("diff {}".format(args))
-    do_container_cmd(cmd_diff, args, "s:")
+    do_container_cmd(cmd_diff, args, "s:S:")
 cmd_diff.do = do_diff
-cmd_diff.usage = """diff [-s snapname] [ctid...]
+cmd_diff.usage = """diff [-s snapname] [-S snapname] [ctid...]
     -a  diff all
-    -s  diff against specified snapshot (default: last snapshot)"""
+    -s  diff from snapshot (default: last snapshot)
+    -S  diff to snapshot (default: live filesystem)"""
 commands["diff"] = cmd_diff
 
 def do_start(vm, opts={}):
