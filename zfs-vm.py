@@ -30,7 +30,7 @@ def hostcmd(host, *args):
 :returns: command stdout
 :rtype: str"""
     cmd = []
-    if host is not None:
+    if host:
         cmd += ["ssh", host]
     if use_sudo:
         cmd += ["sudo"]
@@ -100,10 +100,12 @@ class Filesystem:
             return None
         return self.snapshots[next(reversed(self.snapshots.keys()))]
 
-    def find_snapshot(self, snapname):
+    def find_snapshot(self, snapname, fuzzy=False):
         """find snapshot by name"""
-        for snap in self.snapshots.itervalues():
+        for snap in reversed(self.snapshots.values()):
             if snap.name == snapname:
+                return snap
+            elif snap.name.find(snapname) >= 0:
                 return snap
         return None
 
@@ -120,7 +122,7 @@ class Filesystem:
             cmd = hostcmd(send_filesystems.host, "zfs", "send", "-p", "-P")
             if use_verbose:
                 cmd += ["-v"]
-            if from_snap is not None:
+            if from_snap:
                 cmd += ["-I", from_snap.name]
             cmd += [snap.name]
 
@@ -129,7 +131,7 @@ class Filesystem:
             cmd += hostcmd(recv_filesystems.host, "zfs", "recv", "-F", "-u")
             if use_verbose:
                 cmd += ["-v"]
-            if recv_parent_fs is not None:
+            if recv_parent_fs:
                 cmd += ["-d", recv_parent_fs]
             else:
                 cmd += [snap.name.split("@")[0]]
@@ -140,7 +142,7 @@ class Filesystem:
         if recv_filesystems.find_snapshot(first_snap) is None:
             debug("first snapshot {} (guid {}) does not exist on receiver".format(
                 first_snap.name, first_snap.guid))
-            if self.parent is not None:
+            if self.parent:
                 # sync from parent incrementally
                 self.parent.sync(send_filesystems, recv_filesystems, recv_parent_fs)
                 from_snap = self.parent.last_snapshot()
@@ -272,7 +274,7 @@ def do_sync(cmd, args):
     recv_filesystems = FS.list(recv_host)
 
     for s in send_filesystems.itervalues():
-        if name is not None and s.name != name:
+        if name and s.name != name:
             continue
         s.sync(send_filesystems, recv_filesystems, recv_parent_fs)
 
@@ -321,12 +323,12 @@ def cmd_list(args):
     def list_filesystem(s):
         if s.processed:
             return
-        if s.parent is not None and list_parents:
+        if s.parent and list_parents:
             list_filesystem(s.parent)
 
         # print filesystem
         l = s.name
-        if s.origin is not None:
+        if s.origin:
             l += " (origin: {})".format(s.origin)
         print(l)
 
@@ -341,7 +343,7 @@ def cmd_list(args):
 
     filesystems = FS.list(None if len(args) < 1 else args[0])
     for s in sorted(filesystems.values(), key=lambda x: x.name):
-        if name is not None and s.name != name:
+        if name and s.name != name:
             continue
         list_filesystem(s)
 cmd_list.usage = "list [-n name] [-p] [[user@]host]"
@@ -369,14 +371,14 @@ def do_snapshot(vm, description):
 
     # check if nothing to do
     privatefs_lastsnap = privatefs.last_snapshot()
-    if privatefs_lastsnap is not None:
+    if privatefs_lastsnap:
         if description is None and privatefs_lastsnap.num_changes() == 0:
             debug("Empty description and no changes - skipping snapshot")
             return False
 
     # do snapshot of parent fs (if any) or private fs
     parentfs = vm.get("parentfs")
-    if parentfs is not None:
+    if parentfs:
         snapfs = parentfs
     else:
         snapfs = privatefs
@@ -384,7 +386,7 @@ def do_snapshot(vm, description):
 
     def make_snapname(ts):
         snapname = snapfs.name.replace("/", "-") + "-" + ts
-        if description is not None:
+        if description:
             snapname += "-" + description
         return snapname
 
@@ -421,8 +423,35 @@ cmd_checkpoint.do = do_checkpoint
 cmd_checkpoint.usage = """checkpoint [-a] [-s] [-d description] [ctid...]
     -a  checkpoint all
     -s  fully stop the container before making snapshot
-    -d  snapshot description"""
+    -d  specify snapshot description"""
 commands["checkpoint"] = cmd_checkpoint
+
+def do_diff(vm, opts={}):
+    fs = vm.get("privatefs")
+    if fs is None:
+        return False
+    snapname = opts.get("-s")
+    if snapname:
+        snap = fs.find_snapshot(snapname, fuzzy=True)
+        if snap is None:
+            print("No snapshots like {} found for {}".format(snapname, fs.mountpoint), file=sys.stderr) 
+    else:
+        snap = fs.last_snapshot()
+        if snap is None:
+            print("{} does not have snapshots".format(fs.mountpoint), file=sys.stderr)
+            sys.exit(1)
+    cmd = hostcmd(None, "zfs", "diff", "-F", "-t", snap.name, fs.name)
+    runshell(False, *cmd)
+
+def cmd_diff(args):
+    """diff command"""
+    debug("diff {}".format(args))
+    do_container_cmd(cmd_diff, args, "s:")
+cmd_diff.do = do_diff
+cmd_diff.usage = """diff [-s snapname] [ctid...]
+    -a  diff all
+    -s  diff against specified snapshot (default: last snapshot)"""
+commands["diff"] = cmd_diff
 
 def do_start(vm, opts={}):
     if not vm["status"] == "stopped":
@@ -491,7 +520,7 @@ def usage(cmd=None, error=None):
     """show usage and exit
 :param cmd: command to show usage for (None - show command list)
 :type cmd: command function"""
-    if error is not None:
+    if error:
         print("Error: {}\n".format(error), file=sys.stderr)
 
     name = os.path.basename(sys.argv[0])
