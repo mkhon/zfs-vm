@@ -208,27 +208,34 @@ class FS(dict):
                 fs.snapshots[guid] = Snapshot(snapname)
             setattr(fs.snapshots[guid], propname, value)
 
+        # build parent relation, snapshots and mountpoints dicts
         for fs in filesystems.itervalues():
             if fs.origin:
                 fs.parent = filesystems.get(fs.origin.split("@")[0])
-            if fs.mountpoint:
-                filesystems.mountpoints[fs.mountpoint] = fs
             for snap in fs.snapshots.itervalues():
                 filesystems.snapshots[snap.guid] = fs
-            # sort snapshots by "createtxg"
+            if fs.mountpoint:
+                filesystems.mountpoints[fs.mountpoint] = fs
+            # sort Filesystem snapshots by "createtxg"
             fs.snapshots = collections.OrderedDict(
                 sorted(fs.snapshots.items(), key=lambda x: int(x[1].createtxg)))
 
         return filesystems
 
-class VM:
+class VM(dict):
+    """dict of filesystems (key: name)"""
+
     VZ_CONF_DIR = "/etc/vz/conf"
+
+    def __init__(self):
+        self.names = {}   # name -> container
 
     @staticmethod
     def list():
         filesystems = FS.list(None)
 
-        vms = {}
+        # get all VMs
+        vms = VM()
         for vm in json.loads(runcmd(None, "vzlist", "-a", "-j")):
             # read config
             for l in open("{}/{}.conf".format(VM.VZ_CONF_DIR, vm["ctid"])):
@@ -246,6 +253,11 @@ class VM:
             if parentfs in filesystems.mountpoints:
                 vm["parentfs"] = filesystems.mountpoints[parentfs]
             vms[str(vm["ctid"])] = vm
+
+        # build name dict
+        for vm in vms.itervalues():
+            vms.names[vm["name"]] = vm
+
         return vms
 
 def do_sync(cmd, args):
@@ -280,7 +292,9 @@ def do_sync(cmd, args):
 
 def do_container_cmd(cmd, args, options=""):
     try:
-        opts, args = getopt.getopt(args, "a" + options)
+        if not default_all:
+            options += "a"
+        opts, args = getopt.getopt(args, options)
     except getopt.GetoptError as err:
         usage(cmd, err)
     process_all = default_all
@@ -300,8 +314,10 @@ def do_container_cmd(cmd, args, options=""):
         usage(cmd)
     for id in ids:
         if id not in vms:
-            print("Container {} does not exist".format(id), file=sys.stderr)
-            continue
+            if id not in vms.names:
+                print("Container {} does not exist".format(id), file=sys.stderr)
+                continue
+            id = str(vms.names[id]["ctid"])
         cmd.do(vms[id], other_opts)
 
 ###########################################################################
@@ -552,6 +568,10 @@ Commands:""".format(name=name), file=sys.stderr)
 # main function
 def main(args):
     """main function"""
+    global default_all
+    if os.getenv("VM_DEFAULT_ALL"):
+        default_all = True
+
     # parse command-line options
     try:
         opts, args = getopt.getopt(args[1:], "dhsv")
