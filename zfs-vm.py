@@ -20,7 +20,7 @@ def debug(s):
 :param s: debug message string
 :type s: str"""
     if use_debug:
-        print(">> DEBUG: {0}".format(s))
+        print(">> DEBUG: {}".format(s))
 
 def hostcmd(host, *args):
     """generate command to be run on host
@@ -44,10 +44,10 @@ def runcmd(host, *args):
 :rtype: str"""
     try:
         cmd = hostcmd(host, *args)
-        debug("runcmd: {0}".format(cmd))
+        debug("runcmd: {}".format(cmd))
         output = subprocess.check_output(cmd)
     except subprocess.CalledProcessError as err:
-        print("Command returned exit code {0}".format(err.returncode), file=sys.stderr)
+        print("Command returned exit code {}".format(err.returncode), file=sys.stderr)
         exit(1)
     return output
 
@@ -56,11 +56,11 @@ def runshell(*args):
     cmd = ' '.join(map(lambda x:
         x if len(x) == 1 and x in "&|><" or x == ">>" else pipes.quote(x),
         args))
-    debug("runshell: {0}".format(cmd))
+    debug("runshell: {}".format(cmd))
     try:
         subprocess.check_call(cmd, shell=True)
     except subprocess.CalledProcessError as err:
-        print("Command returned exit code {0}".format(err.returncode), file=sys.stderr)
+        print("Command returned exit code {}".format(err.returncode), file=sys.stderr)
         exit(1)
 
 class Snapshot:
@@ -92,9 +92,9 @@ class Streamline:
             debug("empty snapshot list")
             return
         if self.processed:
-            debug("Streamline {0} is already synced, skipping".format(self.name))
+            debug("Streamline {} is already synced, skipping".format(self.name))
             return
-        #debug("self.snapshots: {0}".format(self.snapshots.keys()))
+        #debug("self.snapshots: {}".format(self.snapshots.keys()))
 
         def sync_snapshot(snap, from_snap = None):
             cmd = hostcmd(send_streamlines.host, "zfs", "send", "-p", "-P")
@@ -118,7 +118,7 @@ class Streamline:
         # sync first snapshot
         first_snap = self.first_snapshot()
         if recv_streamlines.find_snapshot(first_snap) is None:
-            debug("first snapshot {0} (guid {1}) does not exist on receiver".format(
+            debug("first snapshot {} (guid {}) does not exist on receiver".format(
                 first_snap.name, first_snap.guid))
             if self.parent is not None:
                 # sync from parent incrementally
@@ -132,7 +132,7 @@ class Streamline:
         # sync last snapshot
         last_snap = self.last_snapshot()
         if last_snap.guid != first_snap.guid and recv_streamlines.find_snapshot(last_snap) is None:
-            debug("last snapshot {0} (guid {1}) does not exist on receiver".format(
+            debug("last snapshot {} (guid {}) does not exist on receiver".format(
                 last_snap.name, last_snap.guid))
             sync_snapshot(last_snap, first_snap)
 
@@ -232,7 +232,7 @@ def do_sync(cmd, args):
     if len(args) < 1:
         usage(cmd_pull)
     remote_host = args[0] if args[0] != "local" else None
-    debug("remote_host: {0}, name {1}, recv_parent_fs: {2}".format(remote_host, name, recv_parent_fs))
+    debug("remote_host: {}, name {}, recv_parent_fs: {}".format(remote_host, name, recv_parent_fs))
 
     if cmd == cmd_push:
         send_host = None
@@ -275,7 +275,7 @@ def do_container_cmd(cmd, args):
 # commands
 def cmd_list(args):
     """list command"""
-    debug("list {0}".format(args))
+    debug("list {}".format(args))
     try:
         opts, args = getopt.getopt(args, "n:p")
     except getopt.GetoptError as err:
@@ -296,14 +296,14 @@ def cmd_list(args):
         # print streamline
         l = s.name
         if s.origin is not None:
-            l += " (origin: {0})".format(s.origin)
+            l += " (origin: {})".format(s.origin)
         print(l)
 
         # print snapshots
         for snap in s.snapshots.itervalues():
-            l = "\t{0}".format(snap.name)
+            l = "\t{}".format(snap.name)
             if use_verbose:
-                l += " (createtxg: {0}, guid: {1})".format(snap.createtxg, snap.guid)
+                l += " (createtxg: {}, guid: {})".format(snap.createtxg, snap.guid)
             print(l)
 
         s.processed = True
@@ -318,14 +318,14 @@ commands["list"] = cmd_list
 
 def cmd_pull(args):
     """pull command"""
-    debug("pull {0}".format(args))
+    debug("pull {}".format(args))
     do_sync(cmd_pull, args)
 cmd_pull.usage = "pull [-n name] [-d local-dest-fs] [user@]host"
 commands["pull"] = cmd_pull
 
 def cmd_push(args):
     """push command"""
-    debug("push {0}".format(args))
+    debug("push {}".format(args))
     do_sync(cmd_push, args)
 cmd_push.usage = "push [-n name] [-d remote-dest-fs] [user@]host"
 commands["push"] = cmd_push
@@ -336,7 +336,7 @@ def do_cmd_start(vm):
 
 def cmd_start(args):
     """start command"""
-    debug("start {0}".format(args))
+    debug("start {}".format(args))
     do_container_cmd(cmd_start, args)
 cmd_start.do = do_cmd_start
 cmd_start.usage = """start [-a] [ctid..]
@@ -350,7 +350,7 @@ def do_cmd_stop(vm):
 
 def cmd_stop(args):
     """stop command"""
-    debug("stop {0}".format(args))
+    debug("stop {}".format(args))
     do_container_cmd(cmd_stop, args)
 cmd_stop.do = do_cmd_stop
 cmd_stop.usage = """stop [-a] [ctid..]
@@ -363,7 +363,7 @@ def usage(cmd=None, error=None):
 :param cmd: command to show usage for (None - show command list)
 :type cmd: command function"""
     if error is not None:
-        print("Error: {0}\n".format(error), file=sys.stderr)
+        print("Error: {}\n".format(error), file=sys.stderr)
 
     name = os.path.basename(sys.argv[0])
     if cmd is None:
