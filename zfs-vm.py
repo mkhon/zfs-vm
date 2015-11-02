@@ -7,6 +7,7 @@ import pipes
 import collections
 import json
 import sets
+import time
 
 # globals
 commands = collections.OrderedDict()
@@ -58,10 +59,11 @@ def runshell(*args):
         args))
     debug("runshell: {}".format(cmd))
     try:
-        subprocess.check_call(cmd, shell=True)
+        output = subprocess.check_output(cmd, shell=True)
     except subprocess.CalledProcessError as err:
         print("Command returned exit code {}".format(err.returncode), file=sys.stderr)
         exit(1)
+    return output
 
 class Snapshot:
     """Filesystem snapshot"""
@@ -70,34 +72,44 @@ class Snapshot:
         self.guid = None            # snapshot guid
         self.createtxg = 0          # snapshot create txn
 
-class Streamline:
-    """Streamline is a filesystem with snapshots"""
-    def __init__(self, name, origin):
+    def num_changes(self):
+        fsname = self.name.split("@")[0]
+        cmd = hostcmd(None, "zfs", "diff", self.name, fsname, "|", "wc", "-l")
+        output = runshell(*cmd).rstrip("\n")
+        debug("snapshot {}: {} changes".format(self.name, output))
+        return int(output)
+
+class Filesystem:
+    """Filesystem object"""
+    def __init__(self, name):
         self.name = name            # filesystem name
-        self.origin = origin        # origin snapshot
-        self.parent = None          # parent (origin) streamline
+        self.parent = None          # parent (origin) filesystem
         self.snapshots = {}         # guid -> snapshot
         self.processed = False
 
     def first_snapshot(self):
-        """get first streamline snapshot"""
+        """get first filesystem snapshot"""
+        if len(self.snapshots) == 0:
+            return None
         return next(self.snapshots.itervalues())
 
     def last_snapshot(self):
-        """get last streamline snapshot"""
+        """get last filesystem snapshot"""
+        if len(self.snapshots) == 0:
+            return None
         return self.snapshots[next(reversed(self.snapshots.keys()))]
 
-    def sync(self, send_streamlines, recv_streamlines, recv_parent_fs):
+    def sync(self, send_filesystems, recv_filesystems, recv_parent_fs):
         if not self.snapshots:
             debug("empty snapshot list")
             return
         if self.processed:
-            debug("Streamline {} is already synced, skipping".format(self.name))
+            debug("Filesystem {} is already synced, skipping".format(self.name))
             return
         #debug("self.snapshots: {}".format(self.snapshots.keys()))
 
         def sync_snapshot(snap, from_snap = None):
-            cmd = hostcmd(send_streamlines.host, "zfs", "send", "-p", "-P")
+            cmd = hostcmd(send_filesystems.host, "zfs", "send", "-p", "-P")
             if use_verbose:
                 cmd += ["-v"]
             if from_snap is not None:
@@ -106,7 +118,7 @@ class Streamline:
 
             cmd += ["|"]
 
-            cmd += hostcmd(recv_streamlines.host, "zfs", "recv", "-F", "-u")
+            cmd += hostcmd(recv_filesystems.host, "zfs", "recv", "-F", "-u")
             if use_verbose:
                 cmd += ["-v"]
             if recv_parent_fs is not None:
@@ -117,12 +129,12 @@ class Streamline:
 
         # sync first snapshot
         first_snap = self.first_snapshot()
-        if recv_streamlines.find_snapshot(first_snap) is None:
+        if recv_filesystems.find_snapshot(first_snap) is None:
             debug("first snapshot {} (guid {}) does not exist on receiver".format(
                 first_snap.name, first_snap.guid))
             if self.parent is not None:
                 # sync from parent incrementally
-                self.parent.sync(send_streamlines, recv_streamlines, recv_parent_fs)
+                self.parent.sync(send_filesystems, recv_filesystems, recv_parent_fs)
                 from_snap = self.parent.last_snapshot()
             else:
                 # sync base version
@@ -131,18 +143,81 @@ class Streamline:
 
         # sync last snapshot
         last_snap = self.last_snapshot()
-        if last_snap.guid != first_snap.guid and recv_streamlines.find_snapshot(last_snap) is None:
+        if last_snap.guid != first_snap.guid and recv_filesystems.find_snapshot(last_snap) is None:
             debug("last snapshot {} (guid {}) does not exist on receiver".format(
                 last_snap.name, last_snap.guid))
             sync_snapshot(last_snap, first_snap)
 
         self.processed = True
 
+class FS(dict):
+    """dict of filesystems (key: name)"""
+    def __init__(self, host):
+        self.host = host            # host
+        self.snapshots = {}         # guid -> Filesystem
+        self.mountpoints = {}       # mountpoint -> Filesystem
+
+    def find_snapshot(self, snap):
+        return self.snapshots.get(snap.guid)
+
+    @staticmethod
+    def list(host):
+        """list filesystems on host
+:param host: host to list filesystems on (localhost if None)
+:type host: str
+:returns: filesystems on specified host
+:rtype: dict of Filesystems (by name)"""
+        # get filesystem origins
+        filesystems = FS(host)
+        for l in runcmd(host, "zfs", "get", "-H", "-p", "-o", "name,property,value", "-t", "filesystem", "origin,mountpoint").split("\n"):
+            # pool/vm/Root3   origin  pool/vm/Root2@zfs-vm:foo:6
+            if not l:
+                continue
+            debug(l)
+            (fsname, propname, value) = l.split("\t")
+            if value == "-":
+                value = None
+            if propname == "origin":
+                filesystems[fsname] = Filesystem(fsname)
+            setattr(filesystems[fsname], propname, value)
+
+        # get filesystem snapshots
+        for l in runcmd(host, "zfs", "get", "-H", "-p", "-o", "name,property,value", "-t", "snapshot", "guid,createtxg").split("\n"):
+            # pool/src/OpenVZ@pool-src-OpenVZ-20150529-Initial  createtxg   1379    -
+            if not l:
+                continue
+            debug(l)
+            (snapname, propname, value) = l.split("\t")
+            if value == "-":
+                continue    # empty value
+
+            fsname = snapname.split("@")[0]
+            fs = filesystems[fsname]
+            if propname == "guid":
+                guid = value
+                fs.snapshots[guid] = Snapshot(snapname)
+            setattr(fs.snapshots[guid], propname, value)
+
+        for fs in filesystems.itervalues():
+            if fs.origin:
+                fs.parent = filesystems.get(fs.origin.split("@")[0])
+            if fs.mountpoint:
+                filesystems.mountpoints[fs.mountpoint] = fs
+            for snap in fs.snapshots.itervalues():
+                filesystems.snapshots[snap.guid] = fs
+            # sort snapshots by "createtxg"
+            fs.snapshots = collections.OrderedDict(
+                sorted(fs.snapshots.items(), key=lambda x: int(x[1].createtxg)))
+
+        return filesystems
+
 class VM:
     VZ_CONF_DIR = "/etc/vz/conf"
 
     @staticmethod
     def list():
+        filesystems = FS.list(None)
+
         vms = {}
         for vm in json.loads(runcmd(None, "vzlist", "-a", "-j")):
             # read config
@@ -154,69 +229,14 @@ class VM:
                 value = value.strip().strip('"')
                 if name in ("DUMPDIR"):
                     vm[name.lower()] = value
+            privatefs = vm["private"]
+            if privatefs in filesystems.mountpoints:
+                vm["privatefs"] = filesystems.mountpoints[privatefs]
+            parentfs = os.path.dirname(privatefs)
+            if parentfs in filesystems.mountpoints:
+                vm["parentfs"] = filesystems.mountpoints[parentfs]
             vms[str(vm["ctid"])] = vm
         return vms
-
-class Streamlines(dict):
-    """dict of streamlines (key: name)"""
-    def __init__(self, host):
-        self.host = host            # streamlines host
-        self.snapshots = {}         # guid -> Streamline
-
-    def find_snapshot(self, snap):
-        return self.snapshots.get(snap.guid)
-
-    @staticmethod
-    def list(host):
-        """fetch streamlines from host
-:param host: host to fetch from (None if localhost)
-:type host: str
-:returns: streamlines on specified host
-:rtype: dict of Streamlines (by name)"""
-
-        # get filesystem origins
-        origins = {}
-        for l in runcmd(host, "zfs", "get", "-H", "-p", "-o", "name,property,value", "-t", "filesystem", "origin").split("\n"):
-            # pool/vm/Root3   origin  pool/vm/Root2@zfs-vm:foo:6
-            if not l:
-                continue
-            debug(l)
-            (name, prop, value) = l.split("\t")
-            if value == "-":
-                continue    # empty value
-
-            origins[name] = value
-
-        # get streamlines
-        streamlines = Streamlines(host)
-        for l in runcmd(host, "zfs", "get", "-H", "-p", "-o", "name,property,value", "-t", "snapshot", "guid,createtxg").split("\n"):
-            # pool/src/OpenVZ@pool-src-OpenVZ-20150529-Initial  createtxg   1379    -
-            if not l:
-                continue
-            debug(l)
-            (name, propname, value) = l.split("\t")
-            if value == "-":
-                continue    # empty value
-
-            fs = name.split("@")[0]
-            if streamlines.get(fs) is None:
-                streamlines[fs] = Streamline(fs, origins.get(fs))
-            s = streamlines[fs]
-            if propname == "guid":
-                guid = value
-                s.snapshots[guid] = Snapshot(name)
-            setattr(s.snapshots[guid], propname, value)
-
-        # sort snapshots by "createtxg"
-        for s in streamlines.itervalues():
-            if s.origin:
-                s.parent = streamlines.get(s.origin.split("@")[0])
-            s.snapshots = collections.OrderedDict(
-                sorted(s.snapshots.items(), key=lambda x: int(x[1].createtxg)))
-            for snap in s.snapshots.itervalues():
-                streamlines.snapshots[snap.guid] = s
-
-        return streamlines
 
 def do_sync(cmd, args):
     try:
@@ -240,23 +260,26 @@ def do_sync(cmd, args):
     else:
         send_host = remote_host
         recv_host = None
-    send_streamlines = Streamlines.list(send_host)
-    recv_streamlines = Streamlines.list(recv_host)
+    send_filesystems = FS.list(send_host)
+    recv_filesystems = FS.list(recv_host)
 
-    for s in send_streamlines.itervalues():
+    for s in send_filesystems.itervalues():
         if name is not None and s.name != name:
             continue
-        s.sync(send_streamlines, recv_streamlines, recv_parent_fs)
+        s.sync(send_filesystems, recv_filesystems, recv_parent_fs)
 
-def do_container_cmd(cmd, args):
+def do_container_cmd(cmd, args, options=""):
     try:
-        opts, args = getopt.getopt(args, "a")
+        opts, args = getopt.getopt(args, "a" + options)
     except getopt.GetoptError as err:
         usage(cmd, err)
     process_all = default_all
+    other_opts = {}
     for o, a in opts:
         if o == "-a":
             process_all = True
+        else:
+            other_opts[o] = a
  
     vms = VM.list()
     if len(args) > 0:
@@ -269,7 +292,7 @@ def do_container_cmd(cmd, args):
         if id not in vms:
             print("Container {} does not exist".format(id), file=sys.stderr)
             continue
-        cmd.do(vms[id])
+        cmd.do(vms[id], other_opts)
 
 ###########################################################################
 # commands
@@ -287,13 +310,13 @@ def cmd_list(args):
         elif o == "-p":
             list_parents = True
 
-    def list_streamline(s):
+    def list_filesystem(s):
         if s.processed:
             return
         if s.parent is not None and list_parents:
-            list_streamline(s.parent)
+            list_filesystem(s.parent)
 
-        # print streamline
+        # print filesystem
         l = s.name
         if s.origin is not None:
             l += " (origin: {})".format(s.origin)
@@ -308,11 +331,11 @@ def cmd_list(args):
 
         s.processed = True
 
-    streamlines = Streamlines.list(None if len(args) < 1 else args[0])
-    for s in sorted(streamlines.values(), key=lambda x: x.name):
+    filesystems = FS.list(None if len(args) < 1 else args[0])
+    for s in sorted(filesystems.values(), key=lambda x: x.name):
         if name is not None and s.name != name:
             continue
-        list_streamline(s)
+        list_filesystem(s)
 cmd_list.usage = "list [-n name] [-p] [[user@]host]"
 commands["list"] = cmd_list
 
@@ -330,10 +353,64 @@ def cmd_push(args):
 cmd_push.usage = "push [-n name] [-d remote-dest-fs] [user@]host"
 commands["push"] = cmd_push
 
-def do_start(vm):
+def do_snapshot(vm, description):
+    debug(vm)
+    privatefs = vm.get("privatefs")
+    if privatefs is None:
+        return False
+
+    # check if nothing to do
+    privatefs_lastsnap = privatefs.last_snapshot()
+    if privatefs_lastsnap is not None:
+        if description is None and privatefs_lastsnap.num_changes() == 0:
+            debug("Empty description and no changes - skipping snapshot")
+            return False
+
+    # do snapshot of parent fs (if any) or private fs
+    parentfs = vm.get("parentfs")
+    if parentfs is not None:
+        snapfs = parentfs
+    else:
+        snapfs = privatefs
+    t = time.localtime()
+    snapname = snapfs.name.replace("/", "-") + "-" + time.strftime("%Y%m%d", t)
+    if description is not None:
+        snapname += "-" + description
+    runcmd(None, "zfs", "snapshot", "-r", snapfs.name + "@" + snapname)
+
+def do_checkpoint(vm, opts):
+    # stop/suspend container if running
+    full_stop = opts.get("-s") is not None
+    if full_stop:
+        suspended = do_stop(vm)
+    else:
+        suspended = do_suspend(vm)
+
+    # create snapshot
+    do_snapshot(vm, opts.get("-d"))
+
+    # resume container if suspended
+    if suspended:
+        vm["status"] = "stopped"
+        if not do_resume(vm):
+            do_start(vm)
+
+def cmd_checkpoint(args):
+    """checkpoint command"""
+    debug("checkpoint {}".format(args))
+    do_container_cmd(cmd_checkpoint, args, "d:s")
+cmd_checkpoint.do = do_checkpoint
+cmd_checkpoint.usage = """checkpoint [-a] [-s] [-d description] [ctid...]
+    -a  checkpoint all
+    -s  fully stop the container before making snapshot
+    -d  snapshot description"""
+commands["checkpoint"] = cmd_checkpoint
+
+def do_start(vm, opts={}):
     if not vm["status"] == "stopped":
-        return
+        return False
     runcmd(None, "vzctl", "start", str(vm["ctid"]))
+    return True
 
 def cmd_start(args):
     """start command"""
@@ -341,14 +418,14 @@ def cmd_start(args):
     do_container_cmd(cmd_start, args)
 cmd_start.do = do_start
 cmd_start.usage = """start [-a] [ctid...]
-
--a  start all"""
+    -a  start all"""
 commands["start"] = cmd_start
 
-def do_stop(vm):
+def do_stop(vm, opts={}):
     if not vm["status"] == "running":
-        return
+        return False
     runcmd(None, "vzctl", "stop", str(vm["ctid"]))
+    return True
 
 def cmd_stop(args):
     """stop command"""
@@ -356,14 +433,14 @@ def cmd_stop(args):
     do_container_cmd(cmd_stop, args)
 cmd_stop.do = do_stop
 cmd_stop.usage = """stop [-a] [ctid...]
-
--a  stop all"""
+    -a  stop all"""
 commands["stop"] = cmd_stop
 
-def do_suspend(vm):
+def do_suspend(vm, opts={}):
     if not vm["status"] == "running":
-        return
+        return False
     runcmd(None, "vzctl", "suspend", str(vm["ctid"]))
+    return True
 
 def cmd_suspend(args):
     """suspend command"""
@@ -371,17 +448,17 @@ def cmd_suspend(args):
     do_container_cmd(cmd_suspend, args)
 cmd_suspend.do = do_suspend
 cmd_suspend.usage = """suspend [-a] [ctid...]
-
--a  suspend all"""
+    -a  suspend all"""
 commands["suspend"] = cmd_suspend
 
-def do_resume(vm):
+def do_resume(vm, opts={}):
     if not vm["status"] == "stopped":
-        return
+        return False
     dumpfile = "{}/Dump.{}".format(vm["dumpdir"], vm["ctid"])
     if not os.path.isfile(dumpfile):
-        return
+        return False
     runcmd(None, "vzctl", "resume", str(vm["ctid"]))
+    return True
 
 def cmd_resume(args):
     """resume command"""
@@ -389,8 +466,7 @@ def cmd_resume(args):
     do_container_cmd(cmd_resume, args)
 cmd_resume.do = do_resume
 cmd_resume.usage = """resume [-a] [ctid...]
-
--a  resume all"""
+    -a  resume all"""
 commands["resume"] = cmd_resume
 
 def usage(cmd=None, error=None):
@@ -410,7 +486,7 @@ Options:
 -s  use sudo when executing remote commands
 
 Commands:""".format(name=name), file=sys.stderr)
-        for c in sorted(commands):
+        for c in commands:
             print("{usage}".format(name=name, usage=commands[c].usage))
     else:
         print("Usage: {name} {usage}".format(name=name, usage=cmd.usage))
