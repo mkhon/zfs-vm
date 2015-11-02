@@ -139,10 +139,21 @@ class Streamline:
         self.processed = True
 
 class VM:
+    VZ_CONF_DIR = "/etc/vz/conf"
+
     @staticmethod
     def list():
         vms = {}
         for vm in json.loads(runcmd(None, "vzlist", "-a", "-j")):
+            # read config
+            for l in open("{}/{}.conf".format(VM.VZ_CONF_DIR, vm["ctid"])):
+                (name, sep, value) = l.rstrip("\n").partition("#")[0].partition("=")
+                if not sep:
+                    continue
+                name = name.strip()
+                value = value.strip().strip('"')
+                if name in ("DUMPDIR"):
+                    vm[name.lower()] = value
             vms[str(vm["ctid"])] = vm
         return vms
 
@@ -237,6 +248,29 @@ def do_sync(cmd, args):
             continue
         s.sync(send_streamlines, recv_streamlines, recv_parent_fs)
 
+def do_container_cmd(cmd, args):
+    try:
+        opts, args = getopt.getopt(args, "a")
+    except getopt.GetoptError as err:
+        usage(cmd, err)
+    process_all = default_all
+    for o, a in opts:
+        if o == "-a":
+            process_all = True
+ 
+    vms = VM.list()
+    if len(args) > 0:
+        ids = Set(args)
+    elif process_all:
+        ids = Set(vms.iterkeys())
+    else:
+        usage(cmd)
+    for id in ids:
+        if id not in vms:
+            print("Container {} does not exist".format(id), file=sys.stderr)
+            continue
+        cmd.do(vms[id])
+
 ###########################################################################
 # commands
 def cmd_list(args):
@@ -296,65 +330,29 @@ def cmd_push(args):
 cmd_push.usage = "push [-n name] [-d remote-dest-fs] [user@]host"
 commands["push"] = cmd_push
 
+def do_cmd_start(vm):
+    if vm["status"] == "stopped":
+        runcmd(None, "vzctl", "start", str(vm["ctid"]))
+
 def cmd_start(args):
     """start command"""
     debug("start {0}".format(args))
-    try:
-        opts, args = getopt.getopt(args, "a")
-    except getopt.GetoptError as err:
-        usage(cmd_list, err)
-    start_all = default_all
-    for o, a in opts:
-        if o == "-a":
-            start_all = True
- 
-    vms = VM.list()
-    if len(args) > 0:
-        ids = Set(args)
-    elif start_all:
-        ids = Set(vms.iterkeys())
-    else:
-        usage(cmd_start)
-    for id in ids:
-        if id not in vms:
-            print("Container {} does not exist".format(id), file=sys.stderr)
-            continue
-        vm = vms[id]
-        if not vm["status"] == "stopped":
-            continue
-        runcmd(None, "vzctl", "start", str(id))
+    do_container_cmd(cmd_start, args)
+cmd_start.do = do_cmd_start
 cmd_start.usage = """start [-a] [ctid..]
 
 -a  start all"""
 commands["start"] = cmd_start
 
+def do_cmd_stop(vm):
+    if vm["status"] == "running":
+        runcmd(None, "vzctl", "stop", str(vm["ctid"]))
+
 def cmd_stop(args):
     """stop command"""
     debug("stop {0}".format(args))
-    try:
-        opts, args = getopt.getopt(args, "a")
-    except getopt.GetoptError as err:
-        usage(cmd_list, err)
-    stop_all = default_all
-    for o, a in opts:
-        if o == "-a":
-            stop_all = True
- 
-    vms = VM.list()
-    if len(args) > 0:
-        ids = Set(args)
-    elif stop_all:
-        ids = Set(vms.iterkeys())
-    else:
-        usage(cmd_stop)
-    for id in ids:
-        if id not in vms:
-            print("Container {} does not exist".format(id), file=sys.stderr)
-            continue
-        vm = vms[id]
-        if not vm["status"] == "running":
-            continue
-        runcmd(None, "vzctl", "stop", str(id))
+    do_container_cmd(cmd_stop, args)
+cmd_stop.do = do_cmd_stop
 cmd_stop.usage = """stop [-a] [ctid..]
 
 -a  stop all"""
