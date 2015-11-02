@@ -46,24 +46,25 @@ def runcmd(host, *args):
     try:
         cmd = hostcmd(host, *args)
         debug("runcmd: {}".format(cmd))
-        output = subprocess.check_output(cmd)
+        return subprocess.check_output(cmd)
     except subprocess.CalledProcessError as err:
         print("Command returned exit code {}".format(err.returncode), file=sys.stderr)
         exit(1)
-    return output
 
-def runshell(*args):
+def runshell(return_output, *args):
     """run command through shell"""
     cmd = ' '.join(map(lambda x:
         x if len(x) == 1 and x in "&|><" or x == ">>" else pipes.quote(x),
         args))
     debug("runshell: {}".format(cmd))
     try:
-        output = subprocess.check_output(cmd, shell=True)
+        if return_output:
+            return subprocess.check_output(cmd, shell=True)
+        else:
+            subprocess.check_call(cmd, shell=True)
     except subprocess.CalledProcessError as err:
         print("Command returned exit code {}".format(err.returncode), file=sys.stderr)
         exit(1)
-    return output
 
 class Snapshot:
     """Filesystem snapshot"""
@@ -75,7 +76,7 @@ class Snapshot:
     def num_changes(self):
         fsname = self.name.split("@")[0]
         cmd = hostcmd(None, "zfs", "diff", self.name, fsname, "|", "wc", "-l")
-        output = runshell(*cmd).rstrip("\n")
+        output = runshell(True, *cmd).rstrip("\n")
         debug("snapshot {}: {} changes".format(self.name, output))
         return int(output)
 
@@ -98,6 +99,13 @@ class Filesystem:
         if len(self.snapshots) == 0:
             return None
         return self.snapshots[next(reversed(self.snapshots.keys()))]
+
+    def find_snapshot(self, snapname):
+        """find snapshot by name"""
+        for snap in self.snapshots.itervalues():
+            if snap.name == snapname:
+                return snap
+        return None
 
     def sync(self, send_filesystems, recv_filesystems, recv_parent_fs):
         if not self.snapshots:
@@ -125,7 +133,7 @@ class Filesystem:
                 cmd += ["-d", recv_parent_fs]
             else:
                 cmd += [snap.name.split("@")[0]]
-            runshell(*cmd)
+            runshell(False, *cmd)
 
         # sync first snapshot
         first_snap = self.first_snapshot()
@@ -373,9 +381,19 @@ def do_snapshot(vm, description):
     else:
         snapfs = privatefs
     t = time.localtime()
-    snapname = snapfs.name.replace("/", "-") + "-" + time.strftime("%Y%m%d", t)
-    if description is not None:
-        snapname += "-" + description
+
+    def make_snapname(ts):
+        snapname = snapfs.name.replace("/", "-") + "-" + ts
+        if description is not None:
+            snapname += "-" + description
+        return snapname
+
+    snapname = make_snapname(time.strftime("%Y%m%d", t))
+    if snapfs.find_snapshot(snapfs.name + "@" + snapname):
+        snapname = make_snapname(time.strftime("%Y%m%d%H%M", t))
+        if snapfs.find_snapshot(snapfs.name + "@" + snapname):
+            print("Snapshot {}@{} already exists".format(snapfs.name, snapname), file=sys.stderr)
+            sys.exit(1)
     runcmd(None, "zfs", "snapshot", "-r", snapfs.name + "@" + snapname)
 
 def do_checkpoint(vm, opts):
