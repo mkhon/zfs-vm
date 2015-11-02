@@ -5,13 +5,15 @@ import getopt
 import subprocess
 import pipes
 import collections
-from copy import copy
+import json
+from sets import Set
 
 # globals
 commands = {}
 use_sudo = False
 use_debug = False
 use_verbose = False
+default_all = False
 
 def debug(s):
     """print debug message
@@ -29,8 +31,8 @@ def hostcmd(host, *args):
     cmd = []
     if host is not None:
         cmd += ["ssh", host]
-        if use_sudo:
-            cmd += ["sudo"]
+    if use_sudo:
+        cmd += ["sudo"]
     cmd += args
     return cmd
 
@@ -135,6 +137,14 @@ class Streamline:
             sync_snapshot(last_snap, first_snap)
 
         self.processed = True
+
+class VM:
+    @staticmethod
+    def list():
+        vms = {}
+        for vm in json.loads(runcmd(None, "vzlist", "-a", "-j")):
+            vms[str(vm["ctid"])] = vm
+        return vms
 
 class Streamlines(dict):
     """dict of streamlines (key: name)"""
@@ -286,6 +296,70 @@ def cmd_push(args):
 cmd_push.usage = "push [-n name] [-d remote-dest-fs] [user@]host"
 commands["push"] = cmd_push
 
+def cmd_start(args):
+    """start command"""
+    debug("start {0}".format(args))
+    try:
+        opts, args = getopt.getopt(args, "a")
+    except getopt.GetoptError as err:
+        usage(cmd_list, err)
+    start_all = default_all
+    for o, a in opts:
+        if o == "-a":
+            start_all = True
+ 
+    vms = VM.list()
+    if len(args) > 0:
+        ids = Set(args)
+    elif start_all:
+        ids = Set(vms.iterkeys())
+    else:
+        usage(cmd_start)
+    for id in ids:
+        if id not in vms:
+            print("Container {} does not exist".format(id), file=sys.stderr)
+            continue
+        vm = vms[id]
+        if not vm["status"] == "stopped":
+            continue
+        runcmd(None, "vzctl", "start", str(id))
+cmd_start.usage = """start [-a] [ctid..]
+
+-a  start all"""
+commands["start"] = cmd_start
+
+def cmd_stop(args):
+    """stop command"""
+    debug("stop {0}".format(args))
+    try:
+        opts, args = getopt.getopt(args, "a")
+    except getopt.GetoptError as err:
+        usage(cmd_list, err)
+    stop_all = default_all
+    for o, a in opts:
+        if o == "-a":
+            stop_all = True
+ 
+    vms = VM.list()
+    if len(args) > 0:
+        ids = Set(args)
+    elif stop_all:
+        ids = Set(vms.iterkeys())
+    else:
+        usage(cmd_stop)
+    for id in ids:
+        if id not in vms:
+            print("Container {} does not exist".format(id), file=sys.stderr)
+            continue
+        vm = vms[id]
+        if not vm["status"] == "running":
+            continue
+        runcmd(None, "vzctl", "stop", str(id))
+cmd_stop.usage = """stop [-a] [ctid..]
+
+-a  stop all"""
+commands["stop"] = cmd_stop
+
 def usage(cmd=None, error=None):
     """show usage and exit
 :param cmd: command to show usage for (None - show command list)
@@ -300,7 +374,7 @@ def usage(cmd=None, error=None):
 Options:
 -d  debug
 -v  verbose send/recv
--s	use sudo when executing remote commands
+-s  use sudo when executing remote commands
 
 Commands:""".format(name=name), file=sys.stderr)
         for c in sorted(commands):
