@@ -363,21 +363,27 @@ def cmd_list(args):
         if name and s.name != name:
             continue
         list_filesystem(s)
-cmd_list.usage = "list [-n name] [-p] [[user@]host]"
+cmd_list.usage = """list [-n name] [-p] [[user@]host]
+    -n  list only snapshots with specified name
+    -p  include parents"""
 commands["list"] = cmd_list
 
 def cmd_pull(args):
     """pull command"""
     debug("pull {}".format(args))
     do_sync(cmd_pull, args)
-cmd_pull.usage = "pull [-n name] [-d local-dest-fs] [user@]host"
+cmd_pull.usage = """pull [-n name] [-d local-dest-fs] [user@]host
+    -n  pull only snapshots with specified name
+    -d  specify local destination filesystem"""
 commands["pull"] = cmd_pull
 
 def cmd_push(args):
     """push command"""
     debug("push {}".format(args))
     do_sync(cmd_push, args)
-cmd_push.usage = "push [-n name] [-d remote-dest-fs] [user@]host"
+cmd_push.usage = """push [-n name] [-d remote-dest-fs] [user@]host
+    -n  push only snapshots with specified name
+    -d  specify remote destination filesystem"""
 commands["push"] = cmd_push
 
 def do_snapshot(vm, description):
