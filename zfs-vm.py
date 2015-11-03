@@ -60,8 +60,9 @@ def runshell(return_output, *args):
     try:
         if return_output:
             return subprocess.check_output(cmd, shell=True)
-        else:
-            subprocess.check_call(cmd, shell=True)
+
+        subprocess.check_call(cmd, shell=True)
+        return True
     except subprocess.CalledProcessError as err:
         print("Command returned exit code {}".format(err.returncode), file=sys.stderr)
         exit(1)
@@ -412,7 +413,7 @@ def do_snapshot(vm, description):
         if snapfs.find_snapshot(snapfs.name + "@" + snapname):
             print("Snapshot {}@{} already exists".format(snapfs.name, snapname), file=sys.stderr)
             sys.exit(1)
-    runcmd(None, "zfs", "snapshot", "-r", snapfs.name + "@" + snapname)
+    return runshell(False, "zfs", "snapshot", "-r", snapfs.name + "@" + snapname)
 
 def do_checkpoint(vm, opts):
     # stop/suspend container if running
@@ -465,7 +466,7 @@ def do_diff(vm, opts={}):
             print("No snapshots like {} found for {}".format(snapname, fs.mountpoint), file=sys.stderr) 
             sys.exit(1)
     cmd = hostcmd(None, "zfs", "diff", "-F", "-t", snapfrom.name, fs.name if snapto is None else snapto.name)
-    runshell(False, *cmd)
+    return runshell(False, *cmd)
 
 def cmd_diff(args):
     """diff command"""
@@ -481,8 +482,7 @@ commands["diff"] = cmd_diff
 def do_start(vm, opts={}):
     if not vm["status"] == "stopped":
         return False
-    runcmd(None, "vzctl", "start", str(vm["ctid"]))
-    return True
+    return runshell(False, "vzctl", "start", str(vm["ctid"]))
 
 def cmd_start(args):
     """start command"""
@@ -496,8 +496,7 @@ commands["start"] = cmd_start
 def do_stop(vm, opts={}):
     if not vm["status"] == "running":
         return False
-    runcmd(None, "vzctl", "stop", str(vm["ctid"]))
-    return True
+    return runshell(False, "vzctl", "stop", str(vm["ctid"]))
 
 def cmd_stop(args):
     """stop command"""
@@ -511,8 +510,7 @@ commands["stop"] = cmd_stop
 def do_suspend(vm, opts={}):
     if not vm["status"] == "running":
         return False
-    runcmd(None, "vzctl", "suspend", str(vm["ctid"]))
-    return True
+    return runshell(False, "vzctl", "suspend", str(vm["ctid"]))
 
 def cmd_suspend(args):
     """suspend command"""
@@ -529,8 +527,7 @@ def do_resume(vm, opts={}):
     dumpfile = "{}/Dump.{}".format(vm["dumpdir"], vm["ctid"])
     if not os.path.isfile(dumpfile):
         return False
-    runcmd(None, "vzctl", "resume", str(vm["ctid"]))
-    return True
+    return runshell(False, "vzctl", "resume", str(vm["ctid"]))
 
 def cmd_resume(args):
     """resume command"""
