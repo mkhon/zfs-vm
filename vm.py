@@ -8,7 +8,6 @@ import collections
 import json
 import sets
 import time
-import shutil
 
 # globals
 commands = collections.OrderedDict()
@@ -56,7 +55,7 @@ def runshell(return_output, *args):
     """run command through shell"""
     cmd = ' '.join(map(lambda x:
         x if len(x) == 1 and x in "&|><" or x == ">>" else pipes.quote(x),
-        args))
+        hostcmd(None, *args) if return_output is not None else args))
     debug("runshell: {}".format(cmd))
     try:
         if return_output:
@@ -77,8 +76,7 @@ class Snapshot:
 
     def num_changes(self):
         fsname = self.name.split("@")[0]
-        cmd = hostcmd(None, "zfs", "diff", self.name, fsname, "|", "wc", "-l")
-        output = runshell(True, *cmd).rstrip("\n")
+        output = runshell(True, "zfs", "diff", self.name, fsname, "|", "wc", "-l").rstrip("\n")
         debug("snapshot {}: {} changes".format(self.name, output))
         return int(output)
 
@@ -137,7 +135,7 @@ class Filesystem:
                 cmd += ["-d", recv_parent_fs]
             else:
                 cmd += [snap.name.split("@")[0]]
-            runshell(False, *cmd)
+            runshell(None, *cmd)
 
         # sync first snapshot
         first_snap = self.first_snapshot()
@@ -508,15 +506,13 @@ def do_clone(vm, opts={}):
             dump_filename = os.path.join(new_mountpoint, "Dump.{}".format(vm["ctid"]))
             if os.path.exists(dump_filename):
                 new_dump_filename = os.path.join(new_mountpoint, "Dump.{}".format(new_ctid))
-                debug("Renaming dump {} -> {}".format(dump_filename, new_dump_filename))
-                os.rename(dump_filename, new_dump_filename)
+                runshell(False, "mv", dump_filename, new_dump_filename)
                 suspended = True
 
     # create new container configuration
     conf_filename = os.path.join(VM.VZ_CONF_DIR, "{}.conf".format(vm["ctid"]))
     new_conf_filename = os.path.join(VM.VZ_CONF_DIR, "{}.conf".format(new_ctid))
-    debug("Creating conf file {} (source {})".format(new_conf_filename, conf_filename))
-    shutil.copyfile(conf_filename, new_conf_filename)
+    runshell(False, "cp", "-a", conf_filename, new_conf_filename)
 
     # start new container if old container was running
     if vm["status"] == "running":
@@ -560,8 +556,7 @@ def do_diff(vm, opts={}):
         if snapto is None:
             print("No snapshots like {} found for {}".format(snapname, fs.mountpoint), file=sys.stderr) 
             sys.exit(1)
-    cmd = hostcmd(None, "zfs", "diff", "-F", "-t", snapfrom.name, fs.name if snapto is None else snapto.name)
-    return runshell(False, *cmd)
+    return runshell(False, "zfs", "diff", "-F", "-t", snapfrom.name, fs.name if snapto is None else snapto.name)
 
 def cmd_diff(args):
     """diff command"""
