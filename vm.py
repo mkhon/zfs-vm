@@ -8,6 +8,7 @@ import collections
 import json
 import sets
 import time
+import shutil
 
 # globals
 commands = collections.OrderedDict()
@@ -184,7 +185,7 @@ class FS(dict):
             # pool/vm/Root3   origin  pool/vm/Root2@zfs-vm:foo:6
             if not l:
                 continue
-            debug(l)
+            #debug(l)
             (fsname, propname, value) = l.split("\t")
             if value == "-":
                 value = None
@@ -197,7 +198,7 @@ class FS(dict):
             # pool/src/OpenVZ@pool-src-OpenVZ-20150529-Initial  createtxg   1379    -
             if not l:
                 continue
-            debug(l)
+            #debug(l)
             (snapname, propname, value) = l.split("\t")
             if value == "-":
                 continue    # empty value
@@ -291,14 +292,14 @@ def do_sync(cmd, args):
             continue
         s.sync(send_filesystems, recv_filesystems, recv_parent_fs)
 
-def do_container_cmd(cmd, args, options=""):
+def do_container_cmd(cmd, args, options="", allow_all=True):
     try:
-        if not default_all:
+        if not default_all and allow_all:
             options += "a"
         opts, args = getopt.getopt(args, options)
     except getopt.GetoptError as err:
         usage(cmd, err)
-    process_all = default_all
+    process_all = default_all and allow_all
     other_opts = {}
     for o, a in opts:
         if o == "-a":
@@ -387,17 +388,9 @@ cmd_push.usage = """push [-n name] [-d remote-dest-fs] [user@]host
 commands["push"] = cmd_push
 
 def do_snapshot(vm, description):
-    debug(vm)
     privatefs = vm.get("privatefs")
     if privatefs is None:
-        return False
-
-    # check if nothing to do
-    privatefs_lastsnap = privatefs.last_snapshot()
-    if privatefs_lastsnap:
-        if description is None and privatefs_lastsnap.num_changes() == 0:
-            debug("Empty description and no changes - skipping snapshot")
-            return False
+        return None
 
     # do snapshot of parent fs (if any) or private fs
     parentfs = vm.get("parentfs")
@@ -405,32 +398,41 @@ def do_snapshot(vm, description):
         snapfs = parentfs
     else:
         snapfs = privatefs
-    t = time.localtime()
+
+    # check if nothing to do
+    privatefs_lastsnap = privatefs.last_snapshot()
+    snapfs_lastsnap = snapfs.last_snapshot()
+    if privatefs_lastsnap and snapfs_lastsnap:
+        if description is None and privatefs_lastsnap.num_changes() == 0:
+            debug("Empty description and no changes - skipping snapshot")
+            return snapfs_lastsnap.name
 
     def make_snapname(ts):
         snapname = snapfs.name.replace("/", "-") + "-" + ts
         if description:
             snapname += "-" + description
-        return snapname
+        return snapfs.name + "@" + snapname
 
+    t = time.localtime()
     snapname = make_snapname(time.strftime("%Y%m%d", t))
-    if snapfs.find_snapshot(snapfs.name + "@" + snapname):
+    if snapfs.find_snapshot(snapname):
         snapname = make_snapname(time.strftime("%Y%m%d%H%M", t))
-        if snapfs.find_snapshot(snapfs.name + "@" + snapname):
-            print("Snapshot {}@{} already exists".format(snapfs.name, snapname), file=sys.stderr)
+        if snapfs.find_snapshot(snapname):
+            print("Snapshot {} already exists".format(snapname), file=sys.stderr)
             sys.exit(1)
-    return runshell(False, "zfs", "snapshot", "-r", snapfs.name + "@" + snapname)
+    runshell(False, "zfs", "snapshot", "-r", snapname)
+    return snapname
 
 def do_checkpoint(vm, opts):
     # stop/suspend container if running
-    full_stop = opts.get("-s") is not None
+    full_stop = opts.get("-S") is not None
     if full_stop:
         suspended = do_stop(vm)
     else:
         suspended = do_suspend(vm)
 
     # create snapshot
-    do_snapshot(vm, opts.get("-d"))
+    snapname = do_snapshot(vm, opts.get("-d"))
 
     # resume container if suspended
     if suspended:
@@ -438,16 +440,103 @@ def do_checkpoint(vm, opts):
         if not do_resume(vm):
             do_start(vm)
 
+    # return new snapshot name
+    return snapname
+
 def cmd_checkpoint(args):
     """checkpoint command"""
     debug("checkpoint {}".format(args))
-    do_container_cmd(cmd_checkpoint, args, "d:s")
+    do_container_cmd(cmd_checkpoint, args, "d:S")
 cmd_checkpoint.do = do_checkpoint
-cmd_checkpoint.usage = """checkpoint [-a] [-s] [-d description] [ctid...]
+cmd_checkpoint.usage = """checkpoint [-a] [-S] [-d description] [ctid...]
     -a  checkpoint all
-    -s  fully stop the container before making snapshot
+    -S  fully stop the container before making snapshot
     -d  specify snapshot description"""
 commands["checkpoint"] = cmd_checkpoint
+
+def do_clone(vm, opts={}):
+    # determine source snapshot
+    if "-s" in opts:
+        # operate on specified snapshot
+        privatefs = vm.get("privatefs")
+        if privatefs is None:
+            return None
+        parentfs = vm.get("parentfs")
+        if parentfs is None:
+            snapfs = privatefs
+        else:
+            snapfs = parentfs
+
+        snapname = opts["-s"]
+        snap = snapfs.find_snapshot(snapname, fuzzy=True)
+        if snap is None:
+            print("Snapshot {} of filesystem {} not found".format(snapname, snapfs.name), file=sys.stderr)
+            sys.exit(1)
+        snapname = snap.name
+    else:
+        # create a new snapshot
+        snapname = do_checkpoint(vm, opts)
+
+    # determine ctid
+    vms = VM.list()
+    if "-i" in opts:
+        new_ctid = opts["-i"]
+    else:
+        new_ctid = str(reduce(lambda x, y: max(x, int(y)), vms.iterkeys(), 0) + 1)
+    if new_ctid in vms:
+        print("Container {} already exists".format(new_ctid))
+        return None
+
+    def make_new_name(old_name):
+        return (old_name+"/").replace("/{}/".format(vm["ctid"]), "/{}/".format(new_ctid)).rstrip("/")
+
+    debug("clone: new ctid {}, source snapshot {}".format(new_ctid, snapname))
+
+    (fs, snap) = snapname.split("@")
+    # clone filesystems (recursively)
+    suspended = False
+    for l in runcmd(None, "zfs", "list", "-H", "-r", "-o", "name,mountpoint", fs).split("\n"):
+        if not l:
+            continue
+        (_fs, _mountpoint) = l.split("\t")
+        new_fs = make_new_name(_fs)
+        runshell(False, "zfs", "clone", "{}@{}".format(_fs, snap), new_fs)
+
+        # rename dump if any
+        if new_fs.endswith("/Dump"):
+            new_mountpoint = make_new_name(_mountpoint)
+            dump_filename = os.path.join(new_mountpoint, "Dump.{}".format(vm["ctid"]))
+            if os.path.exists(dump_filename):
+                new_dump_filename = os.path.join(new_mountpoint, "Dump.{}".format(new_ctid))
+                debug("Renaming dump {} -> {}".format(dump_filename, new_dump_filename))
+                os.rename(dump_filename, new_dump_filename)
+                suspended = True
+
+    # create new container configuration
+    conf_filename = os.path.join(VM.VZ_CONF_DIR, "{}.conf".format(vm["ctid"]))
+    new_conf_filename = os.path.join(VM.VZ_CONF_DIR, "{}.conf".format(new_ctid))
+    debug("Creating conf file {} (source {})".format(new_conf_filename, conf_filename))
+    shutil.copyfile(conf_filename, new_conf_filename)
+
+    # start new container if old container was running
+    if vm["status"] == "running":
+        if suspended:
+            runshell(False, "vzctl", "resume", new_ctid)
+        else:
+            runshell(False, "vzctl", "start", new_ctid)
+
+def cmd_clone(args):
+    """clone command"""
+    debug("clone {}".format(args))
+    do_container_cmd(cmd_clone, args, "d:Si:n:s:", allow_all=False)
+cmd_clone.do = do_clone
+cmd_clone.usage = """clone [-s snapshot] [-i id] [-n name] [-S] [-d description] ctid
+    -s  source container snapshot (default: clone from live container)
+    -i  new container id (default: allocate next unused ctid)
+    -n  new container name
+    -S  fully stop the container before making snapshot
+    -d  new snapshot description"""
+commands["clone"] = cmd_clone
 
 def do_diff(vm, opts={}):
     fs = vm.get("privatefs")
