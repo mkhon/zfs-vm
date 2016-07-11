@@ -1,53 +1,25 @@
 zfs-vm is an utility for syncing ZFS snapshots of VM/container filesystems.
 
-Snapshot naming
----------------
-
-Current version assumes that ZFS snapshot names have the following format:
-
-	@zfs-vm:streamline:version
-
-where streamline is a VM/container filesystem name
-and version is a number that identifies the snapshot version.
-
-Examples:
-
-	@zfs-vm:debian-7:1
-
-"debian-7" snapshot v1
-
-	@zfs-vm:ubuntu-12.04:28
-
-"ubuntu-12.04" snapshot v28
-
-zfs-vm.py uses streamline name to identify which snapshots of different ZFS
-filesystems are supposed to be the snapshot of the same VM/container filesystem.
-Version numbers are expected to be monotonically increasing.
-
 Commands
 --------
 
+* List zfs-vm snapshots on specified host (localhost by default).
+
 	list [[user@]host]
 
-List zfs-vm snapshots on specified host (localhost by default).
+* Pull snapshots from specified host and put them to "local-parent-fs".
 
-	pull [-n name] [-d local-dest-fs] [user@]host
+	pull [-p] [-n name] [-d local-dest-fs] [user@]host
+	-p - print sync commands only
 	-n - pull only snapshots with the specified streamlne name
 	-d - specify destination parent fs on remote
 
-Pull snapshots from specified host and put them to "local-parent-fs".
+* Push snapshots to specified host and put them to "remote-parent-fs".
 
-	push [-n name] [-d remote-dest-fs] [user@]host
+	push [-p] [-n name] [-d remote-dest-fs] [user@]host
+	-p - print sync commands only
 	-n - pull only snapshots with the specified streamlne name
 	-d - specify destination parent fs on remote
-
-Push snapshots to specified host and put them to "remote-parent-fs".
-
-	tag [-n [name:]version] filesystem|container-id
-
-Create a snapshot of specified filesystem.
-If a filesystem was cloned from zfs-vm snapshot the streamline name
-and version are detected automatically.
 
 Options
 -------
@@ -59,30 +31,25 @@ zfs-vm.py has the following global options:
 
 Examples:
 
+* List snapshots on localhost.
+
 	zfs-vm.py list
 
-List snapshots on localhost.
+* List snapshots on remote-host.
 
 	zfs-vm.py -s list fjoe@remote-host
 
-List snapshots on remote-host.
-
-	zfs-vm.py tag -n debian-7:1 pool/src/OpenVZ/Instance/1007
-
-Create a snapshot of pool/src/OpenVZ/Instance/1007
-the name of streamline is debian-7, version 1.
+* Push all snapshots to remote-host.
 
 	zfs-vm.py -s push fjoe@remote-host
 
-Push all snapshots to remote-host.
+* Push all snapshots to remote-host and put them to tank/vm.
 
 	zfs-vm.py -s push -d tank/vm fjoe@remote-host
 
-Push all snapshots to remote-host and put them to tank/vm.
+* Pull all snapshots from remote-host.
 
 	zfs-vm.py -s pull fjoe@remote-host
-
-Pull all snapshots from remote-host.
 
 Push/pull
 ----------
@@ -94,8 +61,4 @@ snapshots.
 TODO
 ----
 
-1. zfs-vm.py may identify the streamlines and the version sequence from the ZFS instead
-of relying on snapshot naming (zdb, zfs send -vv can supposedly be used for that).
-
-2. zfs-vm.py should support recursive behaviour for tagging/sending/receiving more than
-one FS.
+1. zfs-vm.py should support recursive behaviour for pushing/pulling more than one FS.
