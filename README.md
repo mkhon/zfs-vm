@@ -5,21 +5,21 @@ Commands
 
 * List zfs-vm snapshots on specified host (localhost by default).
 
-	list [[user@]host]
+		list [[user@]host]
 
 * Pull snapshots from specified host and put them to "local-parent-fs".
 
-	pull [-p] [-n name] [-d local-dest-fs] [user@]host
-	-p - print sync commands only
-	-n - pull only snapshots with the specified streamlne name
-	-d - specify destination parent fs on remote
+		pull [-p] [-n name] [-d local-dest-fs] [user@]host
+		-p - print sync commands only
+		-n - pull only snapshots with the specified streamlne name
+		-d - specify destination parent fs on remote
 
 * Push snapshots to specified host and put them to "remote-parent-fs".
 
-	push [-p] [-n name] [-d remote-dest-fs] [user@]host
-	-p - print sync commands only
-	-n - pull only snapshots with the specified streamlne name
-	-d - specify destination parent fs on remote
+		push [-p] [-n name] [-d remote-dest-fs] [user@]host
+		-p - print sync commands only
+		-n - pull only snapshots with the specified streamlne name
+		-d - specify destination parent fs on remote
 
 Options
 -------
@@ -33,23 +33,23 @@ Examples:
 
 * List snapshots on localhost.
 
-	zfs-vm.py list
+		zfs-vm.py list
 
 * List snapshots on remote-host.
 
-	zfs-vm.py -s list fjoe@remote-host
+		zfs-vm.py -s list fjoe@remote-host
 
 * Push all snapshots to remote-host.
 
-	zfs-vm.py -s push fjoe@remote-host
+		zfs-vm.py -s push fjoe@remote-host
 
 * Push all snapshots to remote-host and put them to tank/vm.
 
-	zfs-vm.py -s push -d tank/vm fjoe@remote-host
+		zfs-vm.py -s push -d tank/vm fjoe@remote-host
 
 * Pull all snapshots from remote-host.
 
-	zfs-vm.py -s pull fjoe@remote-host
+		zfs-vm.py -s pull fjoe@remote-host
 
 Push/pull
 ----------
