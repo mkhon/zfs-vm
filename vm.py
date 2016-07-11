@@ -109,7 +109,7 @@ class Filesystem:
                 return snap
         return None
 
-    def sync(self, send_filesystems, recv_filesystems, recv_parent_fs):
+    def sync(self, send_filesystems, recv_filesystems, recv_parent_fs, print_only):
         if not self.snapshots:
             debug("empty snapshot list")
             return
@@ -135,7 +135,10 @@ class Filesystem:
                 cmd += ["-d", recv_parent_fs]
             else:
                 cmd += [snap.name.split("@")[0]]
-            runshell(None, *cmd)
+            if print_only:
+                print(' '.join(cmd))
+            else:
+                runshell(None, *cmd)
 
         # sync first snapshot
         first_snap = self.first_snapshot()
@@ -144,7 +147,7 @@ class Filesystem:
                 first_snap.name, first_snap.guid))
             if self.parent:
                 # sync from parent incrementally
-                self.parent.sync(send_filesystems, recv_filesystems, recv_parent_fs)
+                self.parent.sync(send_filesystems, recv_filesystems, recv_parent_fs, print_only)
                 from_snap = self.parent.last_snapshot()
             else:
                 # sync base version
@@ -262,17 +265,19 @@ class VM(dict):
 
 def do_sync(cmd, args):
     try:
-        opts, args = getopt.getopt(args, "n:d:")
+        opts, args = getopt.getopt(args, "d:n:p")
     except getopt.GetoptError as err:
         usage(cmd, err)
-    name, recv_parent_fs = None, None
+    name, recv_parent_fs, print_only = None, None, False
     for o, a in opts:
         if o == "-n":
             name = a
         elif o == "-d":
             recv_parent_fs = a
+        elif o == "-p":
+            print_only = True
     if len(args) < 1:
-        usage(cmd_pull)
+        usage(cmd)
     remote_host = args[0] if args[0] != "local" else None
     debug("remote_host: {}, name {}, recv_parent_fs: {}".format(remote_host, name, recv_parent_fs))
 
@@ -288,7 +293,7 @@ def do_sync(cmd, args):
     for s in send_filesystems.itervalues():
         if name and s.name != name:
             continue
-        s.sync(send_filesystems, recv_filesystems, recv_parent_fs)
+        s.sync(send_filesystems, recv_filesystems, recv_parent_fs, print_only)
 
 def do_container_cmd(cmd, args, options="", allow_all=True):
     try:
@@ -372,6 +377,7 @@ def cmd_pull(args):
     debug("pull {}".format(args))
     do_sync(cmd_pull, args)
 cmd_pull.usage = """pull [-n name] [-d local-dest-fs] [user@]host
+    -p  print sync commands only
     -n  pull only snapshots with specified name
     -d  specify local destination filesystem"""
 commands["pull"] = cmd_pull
@@ -381,6 +387,7 @@ def cmd_push(args):
     debug("push {}".format(args))
     do_sync(cmd_push, args)
 cmd_push.usage = """push [-n name] [-d remote-dest-fs] [user@]host
+    -p  print sync commands only
     -n  push only snapshots with specified name
     -d  specify remote destination filesystem"""
 commands["push"] = cmd_push
