@@ -9,15 +9,13 @@ Commands
 
 * Pull snapshots from specified host and put them to "local-parent-fs".
 
-	pull [-p] [-n name] [-d local-dest-fs] [user@]host
-	-p - print sync commands only
+	pull [-n name] [-d local-dest-fs] [user@]host
 	-n - pull only snapshots with the specified streamlne name
 	-d - specify destination parent fs on remote
 
 * Push snapshots to specified host and put them to "remote-parent-fs".
 
-	push [-p] [-n name] [-d remote-dest-fs] [user@]host
-	-p - print sync commands only
+	push [-n name] [-d remote-dest-fs] [user@]host
 	-n - pull only snapshots with the specified streamlne name
 	-d - specify destination parent fs on remote
 
@@ -27,7 +25,9 @@ Options
 zfs-vm.py has the following global options:
 
 	-d	debug
+	-n	no-op
 	-s	use sudo on the remote side
+	-v	verbose
 
 Examples:
 
