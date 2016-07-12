@@ -9,13 +9,17 @@ import json
 import sets
 import time
 
+###########################################################################
 # globals
 commands = collections.OrderedDict()
 use_sudo = False
 use_debug = False
 use_verbose = False
+use_noop = False
 default_all = False
 
+###########################################################################
+# utility functions
 def debug(s):
     """print debug message
 :param s: debug message string
@@ -67,6 +71,8 @@ def runshell(return_output, *args):
         print("Command returned exit code {}".format(err.returncode), file=sys.stderr)
         exit(1)
 
+###########################################################################
+# Filesystem snapshot
 class Snapshot:
     """Filesystem snapshot"""
     def __init__(self, name):
@@ -80,6 +86,8 @@ class Snapshot:
         debug("snapshot {}: {} changes".format(self.name, output))
         return int(output)
 
+###########################################################################
+# Filesystem
 class Filesystem:
     """Filesystem object"""
     def __init__(self, name):
@@ -109,7 +117,7 @@ class Filesystem:
                 return snap
         return None
 
-    def sync(self, send_filesystems, recv_filesystems, recv_parent_fs, print_only):
+    def sync(self, send_filesystems, recv_filesystems, recv_parent_fs):
         if not self.snapshots:
             debug("empty snapshot list")
             return
@@ -122,23 +130,23 @@ class Filesystem:
             cmd = hostcmd(send_filesystems.host, "zfs", "send", "-p", "-P")
             if use_verbose:
                 cmd += ["-v"]
+            if use_noop:
+                cmd += ["-n"]
             if from_snap:
                 cmd += ["-I", from_snap.name]
             cmd += [snap.name]
 
-            cmd += ["|"]
+            if not use_noop:
+                cmd += ["|"]
+                cmd += hostcmd(recv_filesystems.host, "zfs", "recv", "-F", "-u")
+                if use_verbose:
+                    cmd += ["-v"]
+                if recv_parent_fs:
+                    cmd += ["-d", recv_parent_fs]
+                else:
+                    cmd += [snap.name.split("@")[0]]
 
-            cmd += hostcmd(recv_filesystems.host, "zfs", "recv", "-F", "-u")
-            if use_verbose:
-                cmd += ["-v"]
-            if recv_parent_fs:
-                cmd += ["-d", recv_parent_fs]
-            else:
-                cmd += [snap.name.split("@")[0]]
-            if print_only:
-                print(' '.join(cmd))
-            else:
-                runshell(None, *cmd)
+            runshell(None, *cmd)
 
         # sync first snapshot
         first_snap = self.first_snapshot()
@@ -147,7 +155,7 @@ class Filesystem:
                 first_snap.name, first_snap.guid))
             if self.parent:
                 # sync from parent incrementally
-                self.parent.sync(send_filesystems, recv_filesystems, recv_parent_fs, print_only)
+                self.parent.sync(send_filesystems, recv_filesystems, recv_parent_fs)
                 from_snap = self.parent.last_snapshot()
             else:
                 # sync base version
@@ -163,6 +171,8 @@ class Filesystem:
 
         self.processed = True
 
+###########################################################################
+# FS
 class FS(dict):
     """dict of filesystems (key: name)"""
     def __init__(self, host):
@@ -225,6 +235,8 @@ class FS(dict):
 
         return filesystems
 
+###########################################################################
+# VM
 class VM(dict):
     """dict of filesystems (key: name)"""
 
@@ -265,17 +277,15 @@ class VM(dict):
 
 def do_sync(cmd, args):
     try:
-        opts, args = getopt.getopt(args, "d:n:p")
+        opts, args = getopt.getopt(args, "d:n:")
     except getopt.GetoptError as err:
         usage(cmd, err)
-    name, recv_parent_fs, print_only = None, None, False
+    name, recv_parent_fs = None, None
     for o, a in opts:
         if o == "-n":
             name = a
         elif o == "-d":
             recv_parent_fs = a
-        elif o == "-p":
-            print_only = True
     if len(args) < 1:
         usage(cmd)
     remote_host = args[0] if args[0] != "local" else None
@@ -293,7 +303,7 @@ def do_sync(cmd, args):
     for s in send_filesystems.itervalues():
         if name and s.name != name:
             continue
-        s.sync(send_filesystems, recv_filesystems, recv_parent_fs, print_only)
+        s.sync(send_filesystems, recv_filesystems, recv_parent_fs)
 
 def do_container_cmd(cmd, args, options="", allow_all=True):
     try:
@@ -326,7 +336,7 @@ def do_container_cmd(cmd, args, options="", allow_all=True):
         cmd.do(vms[id], other_opts)
 
 ###########################################################################
-# commands
+# list
 def cmd_list(args):
     """list command"""
     debug("list {}".format(args))
@@ -372,12 +382,13 @@ cmd_list.usage = """list [-n name] [-p] [[user@]host]
     -p  include parents"""
 commands["list"] = cmd_list
 
+###########################################################################
+# push/pull
 def cmd_pull(args):
     """pull command"""
     debug("pull {}".format(args))
     do_sync(cmd_pull, args)
 cmd_pull.usage = """pull [-n name] [-d local-dest-fs] [user@]host
-    -p  print sync commands only
     -n  pull only snapshots with specified name
     -d  specify local destination filesystem"""
 commands["pull"] = cmd_pull
@@ -387,11 +398,12 @@ def cmd_push(args):
     debug("push {}".format(args))
     do_sync(cmd_push, args)
 cmd_push.usage = """push [-n name] [-d remote-dest-fs] [user@]host
-    -p  print sync commands only
     -n  push only snapshots with specified name
     -d  specify remote destination filesystem"""
 commands["push"] = cmd_push
 
+###########################################################################
+# checkpoint
 def do_snapshot(vm, description):
     privatefs = vm.get("privatefs")
     if privatefs is None:
@@ -425,7 +437,11 @@ def do_snapshot(vm, description):
         if snapfs.find_snapshot(snapname):
             print("Snapshot {} already exists".format(snapname), file=sys.stderr)
             sys.exit(1)
-    runshell(False, "zfs", "snapshot", "-r", snapname)
+    cmd = ["zfs", "snapshot", "-r", snapname]
+    if use_noop:
+        print(' '.join(cmd))
+    else:
+        runshell(False, *cmd)
     return snapname
 
 def do_checkpoint(vm, opts):
@@ -459,6 +475,8 @@ cmd_checkpoint.usage = """checkpoint [-a] [-S] [-d description] [ctid...]
     -d  specify snapshot description"""
 commands["checkpoint"] = cmd_checkpoint
 
+###########################################################################
+# clone
 def do_clone(vm, opts={}):
     # determine source snapshot
     if "-s" in opts:
@@ -505,7 +523,11 @@ def do_clone(vm, opts={}):
             continue
         (_fs, _mountpoint) = l.split("\t")
         new_fs = make_new_name(_fs)
-        runshell(False, "zfs", "clone", "{}@{}".format(_fs, snap), new_fs)
+        cmd = ["zfs", "clone", "{}@{}".format(_fs, snap), new_fs]
+        if use_noop:
+            print(' '.join(cmd))
+        else:
+            runshell(False, *cmd)
 
         # rename dump if any
         if new_fs.endswith("/Dump"):
@@ -513,20 +535,32 @@ def do_clone(vm, opts={}):
             dump_filename = os.path.join(new_mountpoint, "Dump.{}".format(vm["ctid"]))
             if os.path.exists(dump_filename):
                 new_dump_filename = os.path.join(new_mountpoint, "Dump.{}".format(new_ctid))
-                runshell(False, "mv", dump_filename, new_dump_filename)
+                cmd = ["mv", dump_filename, new_dump_filename]
+                if use_noop:
+                    print(' '.join(cmd))
+                else:
+                    runshell(False, *cmd)
                 suspended = True
 
     # create new container configuration
     conf_filename = os.path.join(VM.VZ_CONF_DIR, "{}.conf".format(vm["ctid"]))
     new_conf_filename = os.path.join(VM.VZ_CONF_DIR, "{}.conf".format(new_ctid))
-    runshell(False, "cp", "-a", conf_filename, new_conf_filename)
+    cmd = ["cp", "-a", conf_filename, new_conf_filename]
+    if use_noop:
+        print(' '.join(cmd))
+    else:
+        runshell(False, *cmd)
 
     # start new container if old container was running
     if vm["status"] == "running":
         if suspended:
-            runshell(False, "vzctl", "resume", new_ctid)
+            cmd = ["vzctl", "resume", new_ctid]
         else:
-            runshell(False, "vzctl", "start", new_ctid)
+            cmd = ["vzctl", "start", new_ctid]
+        if use_noop:
+            print(' '.join(cmd))
+        else:
+            runshell(False, *cmd)
 
 def cmd_clone(args):
     """clone command"""
@@ -541,6 +575,8 @@ cmd_clone.usage = """clone [-s snapshot] [-i id] [-n name] [-S] [-d description]
     -d  new snapshot description"""
 commands["clone"] = cmd_clone
 
+###########################################################################
+# diff
 def do_diff(vm, opts={}):
     fs = vm.get("privatefs")
     if fs is None:
@@ -576,10 +612,17 @@ cmd_diff.usage = """diff [-s snapname] [-S snapname] [ctid...]
     -S  diff to snapshot (default: live filesystem)"""
 commands["diff"] = cmd_diff
 
+###########################################################################
+# start
 def do_start(vm, opts={}):
     if not vm["status"] == "stopped":
         return False
-    return runshell(False, "vzctl", "start", str(vm["ctid"]))
+    cmd = ["vzctl", "start", str(vm["ctid"])]
+    if use_noop:
+        print(' '.join(cmd))
+        return False
+    else:
+        return runshell(False, *cmd)
 
 def cmd_start(args):
     """start command"""
@@ -590,10 +633,17 @@ cmd_start.usage = """start [-a] [ctid...]
     -a  start all"""
 commands["start"] = cmd_start
 
+###########################################################################
+# stop
 def do_stop(vm, opts={}):
     if not vm["status"] == "running":
         return False
-    return runshell(False, "vzctl", "stop", str(vm["ctid"]))
+    cmd = ["vzctl", "stop", str(vm["ctid"])]
+    if use_noop:
+        print(' '.join(cmd))
+        return False
+    else:
+        return runshell(False, *cmd)
 
 def cmd_stop(args):
     """stop command"""
@@ -604,10 +654,17 @@ cmd_stop.usage = """stop [-a] [ctid...]
     -a  stop all"""
 commands["stop"] = cmd_stop
 
+###########################################################################
+# suspend
 def do_suspend(vm, opts={}):
     if not vm["status"] == "running":
         return False
-    return runshell(False, "vzctl", "suspend", str(vm["ctid"]))
+    cmd = ["vzctl", "suspend", str(vm["ctid"])]
+    if use_noop:
+        print(' '.join(cmd))
+        return False
+    else:
+        return runshell(False, *cmd)
 
 def cmd_suspend(args):
     """suspend command"""
@@ -618,13 +675,20 @@ cmd_suspend.usage = """suspend [-a] [ctid...]
     -a  suspend all"""
 commands["suspend"] = cmd_suspend
 
+###########################################################################
+# resume
 def do_resume(vm, opts={}):
     if not vm["status"] == "stopped":
         return False
     dumpfile = "{}/Dump.{}".format(vm["dumpdir"], vm["ctid"])
     if not os.path.isfile(dumpfile):
         return False
-    return runshell(False, "vzctl", "resume", str(vm["ctid"]))
+    cmd = ["vzctl", "resume", str(vm["ctid"])]
+    if use_noop:
+        print(' '.join(cmd))
+        return False
+    else:
+        return runshell(False, *cmd)
 
 def cmd_resume(args):
     """resume command"""
@@ -635,6 +699,8 @@ cmd_resume.usage = """resume [-a] [ctid...]
     -a  resume all"""
 commands["resume"] = cmd_resume
 
+###########################################################################
+# usage
 def usage(cmd=None, error=None):
     """show usage and exit
 :param cmd: command to show usage for (None - show command list)
@@ -644,12 +710,13 @@ def usage(cmd=None, error=None):
 
     name = os.path.basename(sys.argv[0])
     if cmd is None:
-        print("""Usage: {name} [-d] [-s] <command> [args...]
+        print("""Usage: {name} [-dnsv] <command> [args...]
 
 Options:
 -d  debug
--v  verbose send/recv
+-n  no-op
 -s  use sudo when executing remote commands
+-v  verbose
 
 Commands:""".format(name=name), file=sys.stderr)
         for c in commands:
@@ -668,16 +735,18 @@ def main(args):
 
     # parse command-line options
     try:
-        opts, args = getopt.getopt(args[1:], "dhsv")
+        opts, args = getopt.getopt(args[1:], "dhnsv")
     except getopt.GetoptError as err:
         usage(error=err)
 
-    global use_sudo, use_debug, use_verbose
+    global use_sudo, use_debug, use_verbose, use_noop
     for o, a in opts:
         if o == "-d":
             use_debug = True
         elif o == "-h":
             usage()
+        elif o == "-n":
+            use_noop = True
         elif o == "-s":
             use_sudo = True
         elif o == "-v":
