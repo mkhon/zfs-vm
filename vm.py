@@ -98,15 +98,11 @@ class Filesystem:
 
     def first_snapshot(self):
         """get first filesystem snapshot"""
-        if len(self.snapshots) == 0:
-            return None
-        return next(self.snapshots.itervalues())
+        return next(self.snapshots.itervalues(), None)
 
     def last_snapshot(self):
         """get last filesystem snapshot"""
-        if len(self.snapshots) == 0:
-            return None
-        return self.snapshots[next(reversed(self.snapshots.keys()))]
+        return self.snapshots[next(reversed(self.snapshots.keys()), None)]
 
     def find_snapshot(self, snapname, fuzzy=False):
         """find snapshot by name"""
@@ -119,14 +115,14 @@ class Filesystem:
 
     def sync(self, send_filesystems, recv_filesystems, recv_parent_fs):
         if not self.snapshots:
-            debug("sync: {}: empty snapshot list".format(self.name))
+            debug("{}: empty snapshot list".format(self.name))
             return
         if self.processed:
             debug("Filesystem {} is already synced, skipping".format(self.name))
             return
         #debug("self.snapshots: {}".format(self.snapshots.keys()))
 
-        def sync_snapshot(snap, from_snap = None):
+        def sync_snapshot(from_snap, to_snap):
             cmd = hostcmd(send_filesystems.host, "zfs", "send", "-p", "-P")
             if use_verbose:
                 cmd += ["-v"]
@@ -134,7 +130,7 @@ class Filesystem:
                 cmd += ["-n"]
             if from_snap:
                 cmd += ["-I", from_snap.name]
-            cmd += [snap.name]
+            cmd += [to_snap.name]
 
             if not use_noop:
                 cmd += ["|"]
@@ -144,15 +140,16 @@ class Filesystem:
                 if recv_parent_fs:
                     cmd += ["-d", recv_parent_fs]
                 else:
-                    cmd += [snap.name.split("@")[0]]
+                    cmd += [to_snap.name.split("@")[0]]
 
             runshell(None, *cmd)
 
         # sync first snapshot
-        first_snap = self.first_snapshot()
-        if recv_filesystems.find_snapshot(first_snap) is None:
-            debug("first snapshot {} (guid {}) does not exist on receiver".format(
-                first_snap.name, first_snap.guid))
+        snapshot_iter = self.snapshots.itervalues()
+        to_snap = next(snapshot_iter)
+        if recv_filesystems.get_snapshot(to_snap) is None:
+            debug("==> first snapshot {} (guid {}) does not exist on receiver".format(
+                to_snap.name, to_snap.guid))
             if self.parent:
                 # sync from parent incrementally
                 self.parent.sync(send_filesystems, recv_filesystems, recv_parent_fs)
@@ -160,14 +157,40 @@ class Filesystem:
             else:
                 # sync base version
                 from_snap = None
-            sync_snapshot(first_snap, from_snap)
+            sync_snapshot(from_snap, to_snap)
+        else:
+            debug("==> first snapshot {} (guid {}) exists on receiver".format(
+                to_snap.name, to_snap.guid))
+        next_from = to_snap
 
-        # sync last snapshot
-        last_snap = self.last_snapshot()
-        if last_snap.guid != first_snap.guid and recv_filesystems.find_snapshot(last_snap) is None:
-            debug("last snapshot {} (guid {}) does not exist on receiver".format(
-                last_snap.name, last_snap.guid))
-            sync_snapshot(last_snap, first_snap)
+        # sync other snapshots
+        while True:
+            # find next missing snapshot (move from_snap)
+            from_snap = next_from
+            for snap in snapshot_iter:
+                if recv_filesystems.get_snapshot(snap) is None:
+                    debug("sync to: snapshot {} (guid {})".format(snap.name, snap.guid))
+                    to_snap = snap
+                    break
+                debug("next from: snapshot {} (guid {})".format(snap.name, snap.guid))
+                from_snap = snap
+            else:
+                # no more missing snapshots - all snapshots are synced
+                break
+
+            # find next existing snapshot (move to_snap)
+            for snap in snapshot_iter:
+                if recv_filesystems.get_snapshot(snap) is not None:
+                    debug("sync from: snapshot {} (guid {})".format(snap.name, snap.guid))
+                    next_from = snap    # next from snap
+                    break
+                debug("next to: snapshot {} (guid {})".format(snap.name, snap.guid))
+                to_snap = snap
+
+            # sync snapshots
+            debug("snapshot {} (guid {}) does not exist on receiver".format(
+                to_snap.name, to_snap.guid))
+            sync_snapshot(from_snap, to_snap)
 
         self.processed = True
 
@@ -180,7 +203,7 @@ class FS(dict):
         self.snapshots = {}         # guid -> Filesystem
         self.mountpoints = {}       # mountpoint -> Filesystem
 
-    def find_snapshot(self, snap):
+    def get_snapshot(self, snap):
         return self.snapshots.get(snap.guid)
 
     @staticmethod
