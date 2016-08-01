@@ -49,7 +49,7 @@ def runcmd(host, *args):
 :rtype: str"""
     try:
         cmd = hostcmd(host, *args)
-        debug("runcmd: {}".format(cmd))
+        debug("runcmd: {}".format(" ".join(cmd)))
         return subprocess.check_output(cmd)
     except subprocess.CalledProcessError as err:
         print("Command returned exit code {}".format(err.returncode), file=sys.stderr)
@@ -113,13 +113,13 @@ class Filesystem:
         for snap in reversed(self.snapshots.values()):
             if snap.name == snapname:
                 return snap
-            elif snap.name.find(snapname) >= 0:
+            elif fuzzy and snap.name.find(snapname) >= 0:
                 return snap
         return None
 
     def sync(self, send_filesystems, recv_filesystems, recv_parent_fs):
         if not self.snapshots:
-            debug("empty snapshot list")
+            debug("sync: {}: empty snapshot list".format(self.name))
             return
         if self.processed:
             debug("Filesystem {} is already synced, skipping".format(self.name))
