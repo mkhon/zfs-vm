@@ -19,6 +19,15 @@ Commands
 		-n - pull only snapshots with the specified streamlne name
 		-d - specify destination parent fs on remote
 
+* Rebase collection of datasets by creating consolidated dataset and creating clone for each source dataset based on this consolidated dataset.
+
+		rebase -n name [-r] [-d] [-f] [-s suffix] [dataset...]
+		-n - consolidated dataset snapshot name (xyz@snap) which be base for re-based datasets
+		-f - destroy target consolidated dataset if already present (non recursive)
+		-d - remove original data sets (non recursive)
+		-r - replace original datasets with re-based clones
+		-s - suffix to add to original dataset name to cloned datasets
+
 Options
 -------
 
@@ -50,6 +59,10 @@ Examples:
 * Pull all snapshots from remote-host.
 
 		zfs-vm.py -s pull fjoe@remote-host
+
+* Rebase dataset (file systems) collection by creating consolidated data set and replcing original datasets by it's clones instaltiated from consolidated data set and keeping backup of original ones.
+
+		zfs-vm.py -s rebase -n tank/vm/merged@today -r tank/vm/vm1 tank/vm/vm2 tank/vm/vm10
 
 Push/pull
 ----------

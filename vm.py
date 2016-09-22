@@ -358,6 +358,85 @@ def do_container_cmd(cmd, args, options="", allow_all=True):
             id = str(vms.names[id]["ctid"])
         cmd.do(vms[id], other_opts)
 
+def cmd_rebase(args):
+    debug("rebase {}".format(args))
+    """rebase command
+       Operation sequence:
+       1. create new FS
+       2. consolidate ALL files from all source datasets (FS's) to new FS via rsync.
+          In case of multiple files with same name in different source DS's "newest" one will be kept
+       3. create snapshot of consolidated dataset
+       4. instantiate clones for each source DS with specified  "suffix" (.rebased is default)
+       5. rsync original source DS to it's target clone, so new version became identical to original
+       6. if requested remove original source datasets
+       7. if requested replace original datasets with it's cloned rebased versions.
+          if remove original datasets flag not set they will renamed to {original}.backup
+
+       TODO. Attempt to migrate original dataset snapshots to rebased versions
+    """
+    try:
+        opts, args = getopt.getopt(args, "n:s:fdr")
+    except getopt.GetoptError as err:
+        usage(cmd_list, err)
+    name, rebased_suffix, force, keep_backup, replace_original = None, '.rebased', False, True, False
+    for o, a in opts:
+        if o == "-n":
+            name = a
+        elif o == "-s":
+            rebased_suffix = a
+        elif o == "-r":
+            replace_original = True
+        elif o == '-d':
+            keep_backup = False
+        elif o == "-f":
+            force = True
+    ids = sets.Set()
+    if len(args) > 0:
+        ids = sets.Set(args)
+    if not name or not ids:
+        usage(cmd_rebase)
+        sys.exit(1)
+
+    name, snap = name.split('@')
+    debug("rebase: consolidated dataset:{0}, backup:{1}, datasets:{2}".format(name, rebased_suffix, ids))
+    if force:
+        runcmd(None, "zfs", "destroy", name) # how ignore if not exists?
+    runcmd(None, "zfs", "create", name)
+    def mountpoint_by_ds(ds):
+        return runcmd(None, "zfs", "get", "-H", "-o", "value", "mountpoint", ds).split('\n')[0]
+    ds_mounts = dict()
+    ds_mounts.update({name: mountpoint_by_ds(name) + '/'})
+    [ ds_mounts.update({ds: mountpoint_by_ds(ds) + '/'}) for ds in ids ]
+
+    rebase_ds_mount=ds_mounts[name]
+    for ds in ids:
+        ds_mount=ds_mounts[ds]
+        runcmd(None, "rsync", "-auP", "--inplace", "--append", ds_mount, rebase_ds_mount)
+
+    rebase_snaphot = "{0}@{1}".format(name, snap)
+    runcmd(None, "zfs", "snapshot", rebase_snaphot)
+    for ds in ids:
+        rebased_ds = "{0}{1}".format(ds, rebased_suffix)
+        runcmd(None, "zfs", "clone", rebase_snaphot, rebased_ds)
+        rebased_ds_mount = mountpoint_by_ds(rebased_ds)
+        ds_mount=ds_mounts[ds]
+        runcmd(None, "rsync", "-a", "--checksum", "--inplace", "--delete", ds_mount, rebased_ds_mount)
+        if replace_original:
+            runcmd(None, "zfs", "rename", ds, "{0}{1}".format(ds, "backup"))
+            runcmd(None, "zfs", "rename", rebased_ds, ds)
+
+    if not keep_backup:
+        for ds in ids:
+            runcmd(None, "zfs", "destroy", "{0}{1}".format(ds, "backup" if replace_original else ""))
+
+cmd_rebase.usage = """rebase -n name [-r] [-d] [-f] [-s suffix] [dataset...]
+    -f  destroy target consolidated dataset if already present (non recursive)
+    -d  remove original data sets (non recursive)
+    -r  replace original datasets with re-based clones
+    -n  consolidated dataset snapshot name (xyz@snap) which will be base for re-based datasets
+    -s  suffix to add to original dataset name to cloned datasets"""
+commands["rebase"] = cmd_rebase
+
 ###########################################################################
 # list
 def cmd_list(args):
