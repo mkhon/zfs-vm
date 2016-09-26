@@ -372,13 +372,16 @@ def cmd_rebase(args):
        7. if requested replace original datasets with it's cloned rebased versions.
           if remove original datasets flag not set they will renamed to {original}.backup
 
-       TODO. Attempt to migrate original dataset snapshots to rebased versions
     """
+    REBASED_SUFFIX = '.rebased'
+    SNAPARCHIVE_SUFFIX = '.archived'
+    BACKUP_SUFFIX = '.backup'
+    reverse_snapshots = True
     try:
-        opts, args = getopt.getopt(args, "n:s:fdr")
+        opts, args = getopt.getopt(args, "n:s:fdrl")
     except getopt.GetoptError as err:
         usage(cmd_list, err)
-    name, rebased_suffix, force, keep_backup, replace_original = None, '.rebased', False, True, False
+    name, rebased_suffix, force, keep_backup, replace_original = None, REBASED_SUFFIX, False, True, False
     for o, a in opts:
         if o == "-n":
             name = a
@@ -390,6 +393,8 @@ def cmd_rebase(args):
             keep_backup = False
         elif o == "-f":
             force = True
+        elif o == "-l":
+            reverse_snapshots = False
     ids = sets.Set()
     if len(args) > 0:
         ids = sets.Set(args)
@@ -398,15 +403,47 @@ def cmd_rebase(args):
         sys.exit(1)
 
     name, snap = name.split('@')
+
+    # find target DS pool to create clones...
+    def rootds(ds):
+        return os.path.dirname(name)
+    target_rootds = rootds(name)
+    def target_ds(ds):
+        return os.path.join(target_rootds, os.path.basename(ds))
+
     debug("rebase: consolidated dataset:{0}, backup:{1}, datasets:{2}".format(name, rebased_suffix, ids))
     if force:
         runcmd(None, "zfs", "destroy", name) # how ignore if not exists?
     runcmd(None, "zfs", "create", name)
+
     def mountpoint_by_ds(ds):
-        return runcmd(None, "zfs", "get", "-H", "-o", "value", "mountpoint", ds).split('\n')[0]
+        return runcmd(None, "zfs", "get", "-H", "-o", "value", "mountpoint", ds).split('\n')[0] + '/'
+
+    def list_snapshots(ds):
+        rv = runcmd(None, "zfs",  "list",  "-r",  "-t",  "snapshot",  "-H", "-o",  "name", ds).split('\n')
+        rv = filter(lambda x: x, rv)
+        debug("DS snapshots: {0} -> {1}".format(ds, rv))
+        return rv
+
+    def migrate_snapthos(snapshot, target_ds):
+        """ TODO, rollback on failed command?! how?"""
+        debug("Migrate snapshot: {0} -> {1}".format(snapshot, target_ds))
+        ds, snap = snapshot.split('@')
+        tmp_ds = "{0}.{1}".format(ds, snap)
+        runcmd(None, "zfs", "clone", snapshot, tmp_ds)
+        tmp_fs = mountpoint_by_ds(tmp_ds)
+        target_fs = mountpoint_by_ds(target_ds)
+        runcmd(None, "rsync", "-a", "--checksum", "--inplace", "--delete", tmp_fs, target_fs)
+        runcmd(None, "zfs", "destroy", tmp_ds)
+        runcmd(None, "zfs", "snapshot", "{0}@{1}".format(target_ds, snap))
+
+    ds_destinations = dict()
     ds_mounts = dict()
-    ds_mounts.update({name: mountpoint_by_ds(name) + '/'})
-    [ ds_mounts.update({ds: mountpoint_by_ds(ds) + '/'}) for ds in ids ]
+    ds_snapshots = dict()
+    ds_mounts.update({name: mountpoint_by_ds(name)})
+    [ ds_mounts.update({ds: mountpoint_by_ds(ds)}) for ds in ids ]
+    [ ds_snapshots.update({ds: list_snapshots(ds)}) for ds in ids ]
+    [ ds_destinations.update({ds: target_ds(ds)}) for ds in ids ]
 
     rebase_ds_mount=ds_mounts[name]
     for ds in ids:
@@ -416,25 +453,38 @@ def cmd_rebase(args):
     rebase_snaphot = "{0}@{1}".format(name, snap)
     runcmd(None, "zfs", "snapshot", rebase_snaphot)
     for ds in ids:
-        rebased_ds = "{0}{1}".format(ds, rebased_suffix)
+        rebased_ds = "{0}{1}".format(ds_destinations[ds], rebased_suffix)
         runcmd(None, "zfs", "clone", rebase_snaphot, rebased_ds)
         rebased_ds_mount = mountpoint_by_ds(rebased_ds)
         ds_mount=ds_mounts[ds]
         runcmd(None, "rsync", "-a", "--checksum", "--inplace", "--delete", ds_mount, rebased_ds_mount)
+
+        # migrate snapshots to archived branch if any
+        if ds_snapshots[ds]:
+            snap_archive_ds = "{0}{1}".format(ds_destinations[ds], SNAPARCHIVE_SUFFIX)
+            runcmd(None, "zfs", "clone", rebase_snaphot, snap_archive_ds)
+            snaps_to_migrate = ds_snapshots[ds]
+            if reverse_snapshots:
+                snaps_to_migrate = reversed(snaps_to_migrate)
+            [migrate_snapthos(snap, snap_archive_ds) for snap in snaps_to_migrate]
+
         if replace_original:
-            runcmd(None, "zfs", "rename", ds, "{0}{1}".format(ds, "backup"))
-            runcmd(None, "zfs", "rename", rebased_ds, ds)
+            # rename original DS only in case of the same destination pool/ds
+            if ds == ds_destinations[ds]:
+                runcmd(None, "zfs", "rename", ds, "{0}{1}".format(ds, BACKUP_SUFFIX))
+            runcmd(None, "zfs", "rename", rebased_ds, ds_destinations[ds])
 
     if not keep_backup:
         for ds in ids:
-            runcmd(None, "zfs", "destroy", "{0}{1}".format(ds, "backup" if replace_original else ""))
+            runcmd(None, "zfs", "destroy", "{0}{1}".format(ds, BACKUP_SUFFIX if replace_original else ""))
 
-cmd_rebase.usage = """rebase -n name [-r] [-d] [-f] [-s suffix] [dataset...]
+cmd_rebase.usage = """rebase -n name [-r] [-d] [-f] [-l] [-s suffix] [dataset...]
     -f  destroy target consolidated dataset if already present (non recursive)
     -d  remove original data sets (non recursive)
     -r  replace original datasets with re-based clones
     -n  consolidated dataset snapshot name (xyz@snap) which will be base for re-based datasets
-    -s  suffix to add to original dataset name to cloned datasets"""
+    -s  suffix to add to original dataset name to cloned datasets
+    -l  do not invert migrated snapshot streamline, default - invert"""
 commands["rebase"] = cmd_rebase
 
 ###########################################################################
