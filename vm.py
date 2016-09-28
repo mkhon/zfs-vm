@@ -403,6 +403,7 @@ def cmd_rebase(args):
         sys.exit(1)
 
     name, snap = name.split('@')
+    debug("rebase: consolidated dataset:{0}, backup:{1}, datasets:{2}".format(name, rebased_suffix, ids))
 
     # find target DS pool to create clones...
     def rootds(ds):
@@ -410,11 +411,6 @@ def cmd_rebase(args):
     target_rootds = rootds(name)
     def target_ds(ds):
         return os.path.join(target_rootds, os.path.basename(ds))
-
-    debug("rebase: consolidated dataset:{0}, backup:{1}, datasets:{2}".format(name, rebased_suffix, ids))
-    if force:
-        runcmd(None, "zfs", "destroy", name) # how ignore if not exists?
-    runcmd(None, "zfs", "create", name)
 
     def mountpoint_by_ds(ds):
         return runcmd(None, "zfs", "get", "-H", "-o", "value", "mountpoint", ds).split('\n')[0] + '/'
@@ -436,6 +432,12 @@ def cmd_rebase(args):
         runcmd(None, "rsync", "-a", "--checksum", "--inplace", "--delete", tmp_fs, target_fs)
         runcmd(None, "zfs", "destroy", tmp_ds)
         runcmd(None, "zfs", "snapshot", "{0}@{1}".format(target_ds, snap))
+
+    if force:
+        runcmd(None, "zfs", "destroy", name) # how ignore if not exists?
+    runcmd(None, "zfs", "create", name)
+    # turn on ZFS block level dedup # TODO if requested?
+    runcmd(None, "zfs", "set", "dedup=on", name)
 
     ds_destinations = dict()
     ds_mounts = dict()
