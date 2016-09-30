@@ -378,10 +378,10 @@ def cmd_rebase(args):
     BACKUP_SUFFIX = '.backup'
     reverse_snapshots = True
     try:
-        opts, args = getopt.getopt(args, "n:s:fdrl")
+        opts, args = getopt.getopt(args, "n:s:fdrlz")
     except getopt.GetoptError as err:
         usage(cmd_list, err)
-    name, rebased_suffix, force, keep_backup, replace_original = None, REBASED_SUFFIX, False, True, False
+    name, rebased_suffix, force, keep_backup, replace_original, dedup = None, REBASED_SUFFIX, False, True, False, True
     for o, a in opts:
         if o == "-n":
             name = a
@@ -395,6 +395,8 @@ def cmd_rebase(args):
             force = True
         elif o == "-l":
             reverse_snapshots = False
+        elif o == "-z":
+            dedup = False
     ids = sets.Set()
     if len(args) > 0:
         ids = sets.Set(args)
@@ -437,7 +439,8 @@ def cmd_rebase(args):
         runcmd(None, "zfs", "destroy", name) # how ignore if not exists?
     runcmd(None, "zfs", "create", name)
     # turn on ZFS block level dedup # TODO if requested?
-    runcmd(None, "zfs", "set", "dedup=on", name)
+    if dedup:
+        runcmd(None, "zfs", "set", "dedup=on", name)
 
     ds_destinations = dict()
     ds_mounts = dict()
@@ -486,6 +489,7 @@ cmd_rebase.usage = """rebase -n name [-r] [-d] [-f] [-l] [-s suffix] [dataset...
     -r  replace original datasets with re-based clones
     -n  consolidated dataset snapshot name (xyz@snap) which will be base for re-based datasets
     -s  suffix to add to original dataset name to cloned datasets
+    -z  do not use ZFS deduplication on consolidated snapshot - default use
     -l  do not invert migrated snapshot streamline, default - invert"""
 commands["rebase"] = cmd_rebase
 
