@@ -151,22 +151,24 @@ class Filesystem:
 
             runshell(None, *cmd)
 
+        debug("==> Syncing filesystem {}".format(self.name))
+
         # sync first snapshot
         snapshot_iter = self.snapshots.itervalues()
         to_snap = next(snapshot_iter)
         if recv_filesystems.get_snapshot(to_snap) is None:
-            debug("==> first snapshot {} (guid {}) does not exist on receiver".format(
+            debug("--> first snapshot {} (guid {}) does not exist on receiver".format(
                 to_snap.name, to_snap.guid))
             if self.parent:
                 # sync from parent incrementally
                 self.parent.sync(send_filesystems, recv_filesystems, recv_parent_fs)
-                from_snap = self.parent.last_snapshot()
+                from_snap = None #self.parent.last_snapshot()
             else:
                 # sync base version
                 from_snap = None
             sync_snapshot(from_snap, to_snap)
         else:
-            debug("==> first snapshot {} (guid {}) exists on receiver".format(
+            debug("--> first snapshot {} (guid {}) exists on receiver".format(
                 to_snap.name, to_snap.guid))
         next_from = to_snap
 
@@ -195,10 +197,11 @@ class Filesystem:
                 to_snap = snap
 
             # sync snapshots
-            debug("snapshot {} (guid {}) does not exist on receiver".format(
+            debug("--> snapshot {} (guid {}) does not exist on receiver".format(
                 to_snap.name, to_snap.guid))
             sync_snapshot(from_snap, to_snap)
 
+        debug("==> Filesystem {} synced".format(self.name))
         self.processed = True
 
 ###########################################################################
@@ -331,7 +334,7 @@ def do_sync(cmd, args):
     recv_filesystems = FS.list(recv_host)
 
     for s in send_filesystems.itervalues():
-        if name and s.name != name:
+        if name and name not in s.name:
             continue
         s.sync(send_filesystems, recv_filesystems, recv_parent_fs)
 
@@ -539,7 +542,7 @@ def cmd_list(args):
 
     filesystems = FS.list(None if len(args) < 1 else args[0])
     for s in sorted(filesystems.values(), key=lambda x: x.name):
-        if name and s.name != name:
+        if name and name not in s.name:
             continue
         list_filesystem(s)
 cmd_list.usage = """list [-n name] [-p] [[user@]host]
