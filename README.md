@@ -10,13 +10,13 @@ Commands
 * Pull snapshots from specified host and put them to "local-parent-fs".
 
 		pull [-n name] [-d local-dest-fs] [user@]host
-		-n - pull only snapshots with the specified streamlne name
+		-n - pull only snapshots with the specified streamline name
 		-d - specify destination parent fs on remote
 
 * Push snapshots to specified host and put them to "remote-parent-fs".
 
 		push [-n name] [-d remote-dest-fs] [user@]host
-		-n - pull only snapshots with the specified streamlne name
+		-n - pull only snapshots with the specified streamline name
 		-d - specify destination parent fs on remote
 
 * Rebase collection of datasets by creating consolidated dataset and creating clone for each source dataset based on this consolidated dataset.
