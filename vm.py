@@ -9,6 +9,11 @@ import json
 import sets
 import time
 
+try:
+    from subprocess import DEVNULL # py3k
+except ImportError:
+    DEVNULL = open(os.devnull, 'wb')
+
 ###########################################################################
 # globals
 commands = collections.OrderedDict()
@@ -50,7 +55,7 @@ def runcmd(host, *args):
     try:
         cmd = hostcmd(host, *args)
         debug("runcmd: {}".format(" ".join(cmd)))
-        return subprocess.check_output(cmd)
+        return subprocess.check_output(cmd, stderr=DEVNULL)
     except subprocess.CalledProcessError as err:
         print("Command returned exit code {}".format(err.returncode), file=sys.stderr)
         exit(1)
@@ -102,6 +107,8 @@ class Filesystem:
 
     def last_snapshot(self):
         """get last filesystem snapshot"""
+        if not self.snapshots:
+            return None
         return self.snapshots[next(reversed(self.snapshots.keys()), None)]
 
     def find_snapshot(self, snapname, fuzzy=False):
