@@ -362,18 +362,17 @@ clone_image()
 convert_images()
 {
 detach_pool ${ROOT_POOL} || /bin/true
-# !!! qcow2 non bootable at least in VBox
-# !!! qemu-img convert -f raw -O qcow2 ${DISK}.clone ${DISK}.qcow2
-#qemu-img convert -f raw -O vdi ${DISK}.clone ${DISK}.vdi
+# !!! qcow2 non bootable at least in VBox, but bootable in KVM (libvirt)
+qemu-img convert -f raw -O qcow2 ${DISK}.clone ${DISK}.qcow2 && echo QCOW2  disk image created ${DISK}.qcow2
 qemu-img convert -f raw -O vmdk ${DISK}.clone ${DISK}.vmdk && echo VMDK disk image created ${DISK}.vmdk
 #qemu-img convert -f raw -O qcow ${DISK}.clone ${DISK}.qcow
-# TODO vagrant box
+#qemu-img convert -f raw -O vdi ${DISK}.clone ${DISK}.vdi
 }
 
 make_vagrant_boxes()
 {
 (cd vagrant/vbox && sh makebox.sh ${DISK}.vmdk && echo Vagrant box:VirtualBox created ${DISK}.vmdk.vagrant-vbox.box )
-(cd vagrant/libvirt && sh makebox.sh ${DISK}.vmdk && echo Vagrant box:Libvirt created ${DISK}.vmdk.vagrant-libvirt.box)
+(cd vagrant/libvirt && sh makebox.sh ${DISK}.qcow2 && echo Vagrant box:Libvirt created ${DISK}.vmdk.vagrant-libvirt.box)
 }
 
 cleanup() {
