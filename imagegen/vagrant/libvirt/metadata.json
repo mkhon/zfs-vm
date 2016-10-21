@@ -1,0 +1,5 @@
+{
+  "provider"     : "libvirt",
+  "format"       : "vmdk",
+  "virtual_size" : 128 
+}

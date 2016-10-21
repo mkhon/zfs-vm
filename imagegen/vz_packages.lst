@@ -1,0 +1,7 @@
+http://download.openvz.org/kernel/branches/rhel6-2.6.32/042stab117.16/vzkernel-2.6.32-042stab117.16.x86_64.rpm
+http://download.openvz.org/kernel/branches/rhel6-2.6.32/042stab117.16/vzkernel-devel-2.6.32-042stab117.16.x86_64.rpm
+http://download.openvz.org/utils/vzctl/4.3.1/vzctl-4.3.1-1.x86_64.rpm
+http://download.openvz.org/utils/vzctl/4.3.1/vzctl-core-4.3.1-1.x86_64.rpm
+http://download.openvz.org/utils/ploop/1.7/ploop-1.7-1.x86_64.rpm
+http://download.openvz.org/utils/ploop/1.7/ploop-lib-1.7-1.x86_64.rpm
+http://download.openvz.org/utils/vzquota/3.1/vzquota-3.1-1.x86_64.rpm
