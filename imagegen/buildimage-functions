@@ -1,11 +1,11 @@
 DEBIAN_VERSION=wheezy
-BUILDDEV_PACKAGES="qemu-utils kpartx gdisk debootstrap iptables vagrant virtualbox qemu-kvm fakeroot alien rpm"
+BUILDDEV_PACKAGES="qemu-utils kpartx gdisk debootstrap iptables vagrant virtualbox qemu-kvm"
 EXTRA_PACKAGES="man vim less"
 ZFS_MOUNTPOINT=/mnt/debian_loop
 STORAGE=~/.vzdebonzfs
 CHROOT_STORAGE=/var/tmp/storage
 debootstrap_url=http://debian.volia.net/debian/
-#APT_OPT="--force-yes"
+#APT_OPT="--force-yes --allow-unauthenticated"
 APT_OPT=""
 ZFSREPOPACKAGE=''
 
@@ -14,8 +14,14 @@ debian_requirements()
     # debian
     codename=`lsb_release -c | awk '{print $2}'`
     if [ "x${codename}" = "xwheezy" ]; then
-        apt-get install --yes kpartx debootstrap qemu-utils fakeroot alien rpm
+        apt-get install --yes kpartx debootstrap qemu-utils
     fi
+}
+
+pool_mount()
+{
+    pname=$1
+    zfs list -H -r -t filesystem -o name,canmount -s name ${pname} | grep -vw off | awk '{print $1}' | xargs -r -I 0 zfs mount 0
 }
 
 detach_pool()
@@ -44,21 +50,17 @@ detach_pool()
 
 mount_disk_image()
 {
-    modprobe dm-mod || /bin/true # old kernels like VZ need it for kpartx
+    (modprobe dm-mod || /bin/true) 2>/dev/null # old kernels like VZ need it for kpartx
     imgfile=$1
     loop_d1=$2
     loop_d2=$3
-    # ugly sleeps, sometimes loop devices does not free immediatelly?!
-    kpartx -d /dev/${loop_d2} || /bin/true
-    sleep 1
-    losetup -d /dev/${loop_d2} || /bin/true
-    sleep 1
-    losetup -d /dev/${loop_d1} || /bin/true
-    sleep 1
+    # ugly sleeps, sometimes loop devices does not freed immediatelly?!
+    ((kpartx -d /dev/${loop_d2} || /bin/true) && sleep 1) 2>/dev/null
+    ((losetup -d /dev/${loop_d2} || /bin/true) && sleep 1) 2>/dev/null
+    ((losetup -d /dev/${loop_d1} || /bin/true) && sleep 1) 2>/dev/null
 
     losetup /dev/${loop_d1} ${imgfile} 
     losetup /dev/${loop_d2} /dev/${loop_d1}
-
     kpartx -a /dev/${loop_d2} || /bin/true
 }
 
@@ -91,6 +93,9 @@ root_pool_layout()
     zfs create -o canmount=off -o mountpoint=none ${pool}/ROOT
     zfs create -o canmount=noauto -o mountpoint=/ ${pool}/ROOT/debian
     zfs mount ${pool}/ROOT/debian
+
+    # XXX
+#    zfs create -o mountpoint=/usr/local/src ${pool}/src
 
 #zfs create -o setuid=off -o overlay=on                             ${pool}/home
 #zfs create -o mountpoint=/root -o overlay=on                       ${pool}/home/root
@@ -144,14 +149,22 @@ install_os_base()
             zpool import -R ${ZFS_MOUNTPOINT} -N ${pool}
             zfs create -p ${pool}/${root_dst}
             zfs send ${root_src} | zfs recv -Fu ${pool}/${ROOT_POOL_DST}
+            zfs unmount ${pool}/${ROOT_POOL_DST}
+            zfs set mountpoint=`zfs list -H -o mountpoint ${ROOT_POOL_SOURCE}` ${pool}/${ROOT_POOL_DST}
+            zfs destroy ${root_src}
+
             #zfs snapshot ${pool}/${root_dst}@rootsrc
             zfs destroy ${pool}/ROOT/debian
             zfs clone -o canmount=noauto -o mountpoint=/ ${pool}/${root_dst}@rootsrc ${pool}/ROOT/debian
+            zfs destroy ${pool}/${ROOT_POOL_DST}@rootsrc
             # w/a issue that clone op mount file system even with -u
             zpool export ${pool}
             rm -rf ${ZFS_MOUNTPOINT}/*
             zpool import -R ${ZFS_MOUNTPOINT} -N ${pool}
-            (zfs list -H -r -t filesystem -o name ${pool} | sort -k 4 | xargs -r -I 0 zfs mount 0) || /bin/true
+            pool_mount ${pool}
+#            (zfs list -H -r -t filesystem -o name ${pool} | sort -k 4 | xargs -r -I 0 zfs mount 0) || /bin/true
+            # unmount rootfs source so rsync will not cleanup it
+            [ "xyes" = "x${ROOT_DEBOOTSTRAP}" ] && zfs umount ${pool}/${ROOT_POOL_DST}
         fi
     else
         # simple debootstrap, do nothing
@@ -163,7 +176,7 @@ install_os_base()
 
 configure_os()
 {
-    sed -i 's/^#T0:23:respawn:/T0:23:respawn:/' ${ZFS_MOUNTPOINT}/etc/inittab
+    #sed -i 's/^#T0:23:respawn:/T0:23:respawn:/' ${ZFS_MOUNTPOINT}/etc/inittab
 
     mkdir -p ${ZFS_MOUNTPOINT}/root/.ssh
     chmod 700 ${ZFS_MOUNTPOINT}/root/.ssh
@@ -199,6 +212,15 @@ exit
 EOF
 }
 
+update_initrd()
+{
+    chroot ${ZFS_MOUNTPOINT} /bin/bash --login -x <<EOF
+vz_version=\`find /lib/modules/ -mindepth 1 -maxdepth 1 -type d -name '*openvz*' -printf '%P'\`
+update-initramfs -u -k \${vz_version} -t
+EOF
+}
+
+
 prep_chroot()
 {
     mount --rbind /dev  ${ZFS_MOUNTPOINT}/dev
@@ -220,14 +242,14 @@ apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 47B5DBAB0FCA9BAC || /bi
 apt-key update
 apt-get update
 
-apt-get install --yes ${APT_OPT} lsb-release openssh-server isc-dhcp-client libcgroup1 libxml2 parted sudo apt-transport-https
+apt-get install --yes ${APT_OPT} lsb-release openssh-server isc-dhcp-client libcgroup1 libxml2 parted sudo apt-transport-https initramfs-tools
 #locale-gen en_US.UTF-8
 #echo 'LANG="en_US.UTF-8"' > /etc/default/locale
 #dpkg-reconfigure tzdata
 echo "Etc/UTC" > /etc/timezone    
 dpkg-reconfigure -f noninteractive tzdata
 
-apt-get install --yes ${APT_OPT} linux-image-amd64 linux-headers-amd64
+#apt-get install --yes ${APT_OPT} linux-image-amd64 linux-headers-amd64
 # mount -o remount,ro /sys/fs/selinux
 if [ -n "${EXTRA_PACKAGES}" ]; then
 apt-get install --yes ${APT_OPT} ${EXTRA_PACKAGES} || /bin/true
@@ -256,6 +278,7 @@ finalize()
 {
     chroot ${ZFS_MOUNTPOINT} /bin/bash --login -x <<EOF
 apt-get clean
+rm -f /var/lib/apt/lists/*
 echo deb http://httpredir.debian.org/debian ${DEBIAN_VERSION} main > /etc/apt/sources.list
 echo deb http://download.openvz.org/debian wheezy main >> /etc/apt/sources.list
 exit
@@ -263,21 +286,6 @@ EOF
 
     cleanup_dev ${ZFS_MOUNTPOINT}
     zfs snapshot ${ROOT_POOL}/ROOT/debian@install
-}
-
-prepare_vz_packages()
-{
-    mkdir -p ${STORAGE}/vzrpms
-    cat vz_packages.lst | wget --no-verbose --directory-prefix=${STORAGE}/vzrpms -c -N -i -
-    cd ${STORAGE}/vzrpms
-    for f in *.rpm; do
-        deb_name=`rpm -qp --qf "%{RPMTAG_NAME}_%{RPMTAG_VERSION}-%{RPMTAG_RELEASE}_amd64.deb" $f`
-        if [ ! -f ${deb_name} ]; then
-            echo Converting RPM tp DEB $f
-            fakeroot alien --to-deb --scripts --keep-version $f
-        fi
-    done
-    cd -
 }
 
 configure_vz()
@@ -295,7 +303,6 @@ EOF
 
 install_vz()
 {
-#    prepare_vz_packages
     chroot ${ZFS_MOUNTPOINT} /bin/bash --login -x <<EOF
 # w/a ploop post install error '/var/lock ...'
 apt-key update
@@ -304,16 +311,20 @@ mkdir -p `readlink -f /var/lock`
 chmod 1777 `readlink -f /var/lock`
 apt-get install --yes ${APT_OPT} ploop
 apt-get install --yes ${APT_OPT} linux-image-openvz-amd64
+
+# w/a dkms fail to detect VZ kernel sources
+vz_version=\`find /lib/modules/ -mindepth 1 -maxdepth 1 -type d -name '*openvz*' -printf '%P'\`
+ln -s /usr/src/linux-headers-\${vz_version} /lib/modules/\${vz_version}/build
+
 apt-get install --yes ${APT_OPT} linux-headers-\`ls /lib/modules/ | grep openvz\`
 apt-get install --yes ${APT_OPT} vzctl vzquota
 
+exit
 # XXX purge default kernel?
 # w/a dkms fail to detect VZ kernel sources
 ln -s \`find /usr/src/ -mindepth 1 -maxdepth 1 -type d -name '*openvz*'\` \`find /lib/modules/ -mindepth 1 -maxdepth 1 -type d -name '*openvz*'\`/build
 
 # broken postinst scripts assumed that systemi running
-#apt-get install --yes ${APT_OPT} vzctl vzquota 
-#dpkg -i ${CHROOT_STORAGE}/vzrpms/*.deb
 splv=\`dpkg-query -W -f='\${Version}' spl-dkms | sed 's/-[0-9]-.*//'\`
 zfsv=\`dpkg-query -W -f='\${Version}' zfs-dkms | sed 's/-[0-9]-.*//'\`
 for k in \`ls /lib/modules/\`; do
@@ -328,8 +339,32 @@ EOF
     remove_stock_kernel
 }
 
+wa_spl_stock_headers_depend()
+{
+mkdir -p ${ZFS_MOUNTPOINT}/tmp/fake_headers/DEBIAN
+cat > ${ZFS_MOUNTPOINT}/tmp/fake_headers/DEBIAN/control <<EOF
+Package: stock-headers-fake
+Version: 0.0.1
+Section: core
+Priority: optional
+Architecture: all
+Depends:
+Provides: linux-headers-amd64
+Suggests:
+Conflicts:
+Maintainer: Alexander Kharkov <kharkovalexander@gmail.com>
+Description: Provides fake kernel headers to prevent stock kernel installation
+EOF
+
+    chroot ${ZFS_MOUNTPOINT} /bin/bash --login -x <<EOF
+dpkg-deb -b /tmp/fake_headers /tmp/
+dpkg -i /tmp/stock-headers-fake_0.0.1_all.deb
+EOF
+}
+
 install_zfs()
 {
+    wa_spl_stock_headers_depend
     chroot ${ZFS_MOUNTPOINT} /bin/bash --login -x <<EOF
 dpkg -i ${CHROOT_STORAGE}/${ZFSREPOPACKAGE}
 apt-get update
@@ -342,10 +377,10 @@ install_grub()
 {
     mountpoint=$1
     device=$2
+    update_initrd
     chroot ${mountpoint} /bin/bash --login -x <<EOF
 rm -f /etc/mtab
 ln -s /proc/self/mounts /etc/mtab
-update-initramfs -u -k all
 
 mkdir -p /boot/grub/
 cat > /boot/grub/device.map << !
@@ -359,7 +394,7 @@ EOF
     chroot ${mountpoint} /bin/bash --login -x <<EOF
 grub-probe /
 update-grub
-sed -i 's/^#GRUB_TERMINAL=/GRUB_TERMINAL=/' /etc/default/grub
+#sed -i 's/^#GRUB_TERMINAL=/GRUB_TERMINAL=/' /etc/default/grub
 ls /boot/grub/*/zfs.mod
 
 # w/a loopback device detection by grub...
@@ -380,9 +415,8 @@ build_image()
     ZFSREPOPACKAGE=`apt-get download --print-uris zfsonlinux | awk '{print $2}'`
     (cd $STORAGE && apt-get download zfsonlinux) #zfsonlinux_8_all.deb now
 
-    #prepare_vz_packages
     cleanup
-    modprobe loop || /bin/true # old kernels like VZ does not have loop module
+    (modprobe loop || /bin/true) 2>/dev/null # old kernels like VZ does not have loop module
     modprobe zfs
     create_disk_image ${DISK} loop0 loop1
     zfs_pool loop1 ${ROOT_POOL} ${ZFS_MOUNTPOINT}
@@ -392,8 +426,8 @@ build_image()
     prep_chroot
     install_os
     configure_os
-    install_zfs
     [ "xyes" = "x${INSTALL_VZ}" ] && install_vz
+    install_zfs
     install_grub ${ZFS_MOUNTPOINT} loop1
 
     finalize
@@ -404,19 +438,21 @@ cleanup_dev()
 {
     fs=$1
     chroot ${fs} /bin/bash --login -x <<EOF
-#tar -cvf backup.tar /lib/modules/*/updates/dkms /boot/initrd.img*
 tar -cvf backup.tar \`find /lib/modules -type d -name dkms\`
 for e in \`dpkg -L zfs-initramfs\`; do
     test -d \$e || tar -rf backup.tar \$e
 done
-apt-get --purge --yes remove binutils build-essential cpp debian-zfs dkms dpkg-dev g++ g++-4.7 gcc gcc-4.6 gcc-4.7 libstdc++6-4.7-dev libuuid-perl linux-base linux-headers-3.2.0-4-amd64 linux-headers-amd64 linux-kbuild-3.2 spl-dkms zfs-dkms zfs-initramfs cpp-4.6 cpp-4.7 fakeroot libalgorithm-diff-perl libalgorithm-diff-xs-perl libalgorithm-merge-perl libc-dev-bin libc6-dev libdpkg-perl libfile-fcntllock-perl libgmp10 libgomp1 libitm1 libmpc2 libmpfr4 libquadmath0 libtimedate-perl linux-headers-3.2.0-4-common linux-libc-dev manpages-dev patch linux-headers-\`ls /lib/modules/ | grep openvz\`
+
+apt-get --purge remove --yes binutils build-essential cpp debian-zfs dkms dpkg-dev g++ g++-4.7 gcc  gcc-4.7 libstdc++6-4.7-dev  spl-dkms zfs-dkms zfs-initramfs  cpp-4.7 fakeroot libalgorithm-diff-perl libalgorithm-diff-xs-perl libalgorithm-merge-perl libc-dev-bin libc6-dev libdpkg-perl libfile-fcntllock-perl libgmp10 libgomp1 libitm1 libmpc2 libmpfr4 libquadmath0 libtimedate-perl linux-libc-dev manpages-dev patch linux-headers-2.6.32-openvz-042stab120.6-amd64 stock-headers-fake
+
+echo For some reason we can not reach this place
 # we need return back zfs modules for update-initrd
-tar xvf backup.tar -C / && rm backup.tar
+tar -xvf backup.tar -C / && rm backup.tar
 for k in \`ls /lib/modules/\`; do
 depmod -a \$k
 done
-update-initramfs -u -k all -t
 EOF
+    update_initrd
 }
 
 # vi: set filetype=sh expandtab sw=4 ts=4 :
