@@ -14,7 +14,7 @@ debian_requirements()
     # debian
     codename=`lsb_release -c | awk '{print $2}'`
     if [ "x${codename}" = "xwheezy" ]; then
-        apt-get install --yes kpartx debootstrap qemu-utils
+        apt-get install --yes ${BUILDDEV_PACKAGES}
     fi
 }
 
