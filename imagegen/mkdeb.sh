@@ -103,9 +103,12 @@ fi
 shift
 if [ -n "$1" ]; then
     preset=$1
-    . ${preset}
     shift
 fi
+if [ -z "${preset}" ]; then
+    preset=presets/rootds_based_debootstrapped
+fi
+. ${preset}
 EXTRA_PACKAGES=$*
 
 . `dirname $0`/buildimage-functions
