@@ -54,7 +54,7 @@ convert_image()
 # !!! qcow2 non bootable at least in VBox, but bootable in KVM (libvirt)
     img=$1
     fmt=$2
-    qemu-img convert -f raw -O ${fmt} ${img}.clone ${img}.${fmt} && echo ${fmt} disk image created ${img}.${fmt}
+    qemu-img convert -f raw -O ${fmt} ${img}.clone ${img}.${fmt} && echo -n ${fmt} disk image created ${img}.${fmt} && du -sh ${img}.${fmt}
 }
 
 convert_images()
@@ -69,7 +69,7 @@ convert_images()
 
 make_vagrant_boxes()
 {
-(cd vagrant/vbox && sh makebox.sh ${DISK}.vmdk && echo Vagrant box:VirtualBox created ${DISK}.vmdk.vagrant-vbox.box )
+(cd vagrant/vbox && sh makebox.sh ${DISK}.vmdk && echo -n Vagrant box:VirtualBox created ${DISK}.vmdk.vagrant-vbox.box && du -sh ${DISK}.vmdk.vagrant-vbox.box)
 #(cd vagrant/libvirt && sh makebox.sh ${DISK}.qcow2 && echo Vagrant box:Libvirt created ${DISK}.vmdk.vagrant-libvirt.box)
 }
 
