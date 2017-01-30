@@ -1,0 +1,2 @@
+# grub-pc only source package
+deb-src http://http.us.debian.org/debian unstable main

@@ -1,0 +1,11 @@
+Package: gcc6-simulation
+Version: 0.0.1
+Section: core
+Priority: optional
+Architecture: all
+Depends:
+Provides: gcc-6, gcc-6-multilib
+Suggests:
+Conflicts:
+Maintainer: Alexander Kharkov <kharkovalexander@gmail.com>
+Description: Provides fake gcc-6 for building grub-pc from unstable

@@ -1,0 +1,11 @@
+--- debian/control.in	2017-01-29 17:57:03.760302262 +0000
++++ debian/control.in	2017-01-29 17:58:16.645304029 +0000
+@@ -17,7 +17,7 @@
+ 
+ Package: spl-dkms
+ Architecture: all
+-Depends: dkms (>> 2.2.1.0), file, libc-dev, lsb-release, ${misc:Depends}
++Depends: dkms (>> 2.2.0.2), file, libc-dev, lsb-release, ${misc:Depends}
+ Recommends: spl (>= ${source:Upstream-Version})
+ Provides: spl-modules
+ Description: Solaris Porting Layer kernel modules for Linux
