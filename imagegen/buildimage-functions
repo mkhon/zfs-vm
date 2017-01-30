@@ -2,7 +2,7 @@ DEBIAN_VERSION=wheezy
 BUILDDEV_PACKAGES="qemu-utils kpartx gdisk debootstrap iptables vagrant virtualbox qemu-kvm man less"
 EXTRA_PACKAGES="vim "
 ZFS_MOUNTPOINT=/mnt/debian_loop
-STORAGE=~/.vzdebonzfs
+STORAGE=`pwd`/deb-packages
 CHROOT_STORAGE=/var/tmp/storage
 debootstrap_url=http://debian.volia.net/debian/
 #APT_OPT="--force-yes --allow-unauthenticated"
@@ -66,11 +66,11 @@ mount_disk_image()
 
 zfs_disk_markup()
 {
-    dev=$1
-    sgdisk -o ${dev}
-    sgdisk -n9:-8M:0 -t9:BF07 ${dev}
-    sgdisk -n1:0:0 -t1:BF01 ${dev}
-    kpartx -a ${dev}
+disk=$1
+sgdisk -o $disk
+sgdisk -a1 -n2:34:2047  -t2:EF02 $disk
+sgdisk     -n9:-8M:0    -t9:BF07 $disk
+sgdisk     -n1:0:0      -t1:BF01 $disk
 }
 
 create_disk_image()
@@ -82,8 +82,8 @@ create_disk_image()
     size=${size:-2G}
     rm -f ${disk}
     qemu-img create ${disk} ${size}
+    zfs_disk_markup ${disk}
     mount_disk_image ${disk} ${loop_d1} ${loop_d2}
-    zfs_disk_markup /dev/${loop_d2}
 }
 
 # https://github.com/zfsonlinux/zfs/wiki/Ubuntu-16.04-Root-on-ZFS
@@ -236,6 +236,7 @@ install_os()
 {
     mkdir -p ${ZFS_MOUNTPOINT}/var/tmp/cdrom
     echo deb ${debootstrap_url} ${DEBIAN_VERSION} main > ${ZFS_MOUNTPOINT}/etc/apt/sources.list
+    echo deb ${debootstrap_url} ${DEBIAN_VERSION}-backports main >> ${ZFS_MOUNTPOINT}/etc/apt/sources.list
     echo deb http://download.openvz.org/debian wheezy main >> ${ZFS_MOUNTPOINT}/etc/apt/sources.list
 
     chroot ${ZFS_MOUNTPOINT} /bin/bash --login -x <<EOF
@@ -325,16 +326,6 @@ exit
 # XXX purge default kernel?
 # w/a dkms fail to detect VZ kernel sources
 ln -s \`find /usr/src/ -mindepth 1 -maxdepth 1 -type d -name '*openvz*'\` \`find /lib/modules/ -mindepth 1 -maxdepth 1 -type d -name '*openvz*'\`/build
-
-# broken postinst scripts assumed that systemi running
-splv=\`dpkg-query -W -f='\${Version}' spl-dkms | sed 's/-[0-9]-.*//'\`
-zfsv=\`dpkg-query -W -f='\${Version}' zfs-dkms | sed 's/-[0-9]-.*//'\`
-for k in \`ls /lib/modules/\`; do
-    /usr/sbin/dkms build -m spl -v \${splv} -k \${k}
-    /usr/sbin/dkms install -m spl -v \${splv} -k \${k}
-    /usr/sbin/dkms build -m zfs -v \${zfsv} -k \${k}
-    /usr/sbin/dkms install -m zfs -v \${zfsv} -k \${k}
-done
 exit
 EOF
     configure_vz
@@ -366,11 +357,19 @@ EOF
 
 install_zfs()
 {
+cd ${STORAGE}
+sh ./repo.sh
+cd -
+# weezy-backports required!
     wa_spl_stock_headers_depend
     chroot ${ZFS_MOUNTPOINT} /bin/bash --login -x <<EOF
-dpkg -i ${CHROOT_STORAGE}/${ZFSREPOPACKAGE}
+cd ${CHROOT_STORAGE}/
+echo deb [trusted=yes] file:\`pwd\` ./ > /etc/apt/sources.list.d/zfsvm.list
 apt-get update
-apt-get install --yes ${APT_OPT} debian-zfs zfs-initramfs
+
+apt-get install -y spl-dkms
+apt-get install -y zfs-dkms
+apt-get install -y zfs-initramfs zfsutils-linux
 exit
 EOF
 }
@@ -381,28 +380,31 @@ install_grub()
     device=$2
     update_initrd
     chroot ${mountpoint} /bin/bash --login -x <<EOF
-rm -f /etc/mtab
-ln -s /proc/self/mounts /etc/mtab
-
-mkdir -p /boot/grub/
-cat > /boot/grub/device.map << !
-(hd0)   /dev/${device}
-!
-
-DEBIAN_FRONTEND=noninteractive apt-get install --yes ${APT_OPT} grub-pc
+cd ${CHROOT_STORAGE}/grub2/build
+DEBIAN_FRONTEND=noninteractive PATH=\`pwd\`/../dh_new/bin:$PATH apt-get install -y grub-pc
+# /etc/grub.d/10_linux
+# LINUX_ROOT_DEVICE="ZFS=${rpool}${bootfs} boot=zfs"
+sed -i 's/LINUX_ROOT_DEVICE="ZFS=\${rpool}\${bootfs}"/LINUX_ROOT_DEVICE="ZFS=\${rpool}\${bootfs} boot=zfs"/g' /etc/grub.d/10_linux
+grub-install /dev/${device}
+update-grub
 exit
 EOF
+}
 
+xinstall_grub()
+{
+    mountpoint=$1
+    device=$2
+    update_initrd
     chroot ${mountpoint} /bin/bash --login -x <<EOF
-grub-probe /
-update-grub
-#sed -i 's/^#GRUB_TERMINAL=/GRUB_TERMINAL=/' /etc/default/grub
-ls /boot/grub/*/zfs.mod
-
-# w/a loopback device detection by grub...
-sed -i '/loopback/d' /boot/grub/grub.cfg 
-sed -i '/set root=(loop/d' /boot/grub/grub.cfg 
+apt-get install -y libfreetype6 libfuse2 gettext-base ucf
+cd ${CHROOT_STORAGE}/grub2/build
+DEBIAN_FRONTEND=noninteractive PATH=\`pwd\`/../dh_new/bin:$PATH dpkg -i grub-common_2.02~beta3-4_amd64.deb grub2-common_2.02~beta3-4_amd64.deb grub-pc_2.02~beta3-4_amd64.deb grub-pc-bin_2.02~beta3-4_amd64.deb
+# /etc/grub.d/10_linux
+# LINUX_ROOT_DEVICE="ZFS=${rpool}${bootfs} boot=zfs"
+sed -i 's/LINUX_ROOT_DEVICE="ZFS=\${rpool}\${bootfs}"/LINUX_ROOT_DEVICE="ZFS=\${rpool}\${bootfs} boot=zfs"/g' /etc/grub.d/10_linux
 grub-install /dev/${device}
+update-grub
 exit
 EOF
 }
@@ -412,10 +414,8 @@ build_image()
     EXTRA_PACKAGES="$EXTRA_PACKAGES $*"
     mkdir -p ${STORAGE}
     mkdir -p ${ZFS_MOUNTPOINT}
-    apt-key update
-    apt-get update
-    ZFSREPOPACKAGE=`apt-get download --print-uris zfsonlinux | awk '{print $2}'`
-    (cd $STORAGE && apt-get download zfsonlinux) #zfsonlinux_8_all.deb now
+    #apt-key update
+    #apt-get update
 
     cleanup
     (modprobe loop || /bin/true) 2>/dev/null # old kernels like VZ does not have loop module
@@ -445,8 +445,7 @@ for e in \`dpkg -L zfs-initramfs\`; do
     test -d \$e || tar -rf backup.tar \$e
 done
 
-apt-get --purge remove --yes binutils build-essential cpp debian-zfs dkms dpkg-dev g++ g++-4.7 gcc  gcc-4.7 libstdc++6-4.7-dev  spl-dkms zfs-dkms zfs-initramfs  cpp-4.7 fakeroot libalgorithm-diff-perl libalgorithm-diff-xs-perl libalgorithm-merge-perl libc-dev-bin libc6-dev libdpkg-perl libfile-fcntllock-perl libgmp10 libgomp1 libitm1 libmpc2 libmpfr4 libquadmath0 libtimedate-perl linux-libc-dev manpages-dev patch linux-headers-2.6.32-openvz stock-headers-fake
-
+apt-get --purge remove --yes binutils cpp dkms gcc  gcc-4.7 spl-dkms zfs-dkms zfs-initramfs  cpp-4.7 fakeroot libc-dev-bin libc6-dev libdpkg-perl libgmp10 libgomp1 libitm1 libmpc2 libmpfr4 libquadmath0 linux-libc-dev manpages-dev patch linux-headers-2.6.32-openvz stock-headers-fake
 apt-get --purge remove --yes xauth usbutils manpages make libx11-6 libx11-data libxau6 libxcb1 libxdmcp6 libxext6 libusb-1.0 pciutils tcpd
 
 vz_version=\`find /lib/modules/ -mindepth 1 -maxdepth 1 -type d -name '*openvz*' -printf '%P'\`
