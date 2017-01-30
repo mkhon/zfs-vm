@@ -1,6 +1,5 @@
-diff -ur debian/rules /home/vagrant/xxx/grub-2.02~beta3/debian/rules
---- debian/rules	2016-11-01 11:05:05.000000000 +0000
-+++ /home/vagrant/xxx/grub-2.02~beta3/debian/rules	2017-01-20 20:46:34.982436426 +0000
+--- debian/rules	2017-01-30 01:52:41.499268170 +0000
++++ debian/rules	2017-01-30 01:53:34.869262974 +0000
 @@ -21,15 +21,17 @@
  export HOST_CFLAGS
  export HOST_LDFLAGS
@@ -22,3 +21,12 @@ diff -ur debian/rules /home/vagrant/xxx/grub-2.02~beta3/debian/rules
  
  confflags = \
  	PACKAGE_VERSION="$(deb_version)" PACKAGE_STRING="GRUB $(deb_version)" \
+@@ -40,7 +42,7 @@
+ 
+ AUTOGEN_DEB_FILES = config templates preinst postinst postrm dirs install links maintscript
+ 
+-BUILD_PACKAGES := $(strip $(shell dh_listpackages))
++BUILD_PACKAGES := grub-common grub2-common grub-pc-bin grub-pc 
+ # REAL_PACKAGES build an actual grub variant (and therefore have both configure
+ # and build stages). EXTRA_PACKAGES do not build grub but may depend on a
+ # REAL_PACKAGE (and therefore only have a build stage)

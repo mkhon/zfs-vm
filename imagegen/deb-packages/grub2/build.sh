@@ -19,3 +19,4 @@ patch_grub2()
 }
 
 build_package grub2 patch_grub2
+#build_package grub2

@@ -3,7 +3,7 @@ build_package()
 {
     name=$1
     extract_hook=$2
-    cd src
+    mkdir -p src && cd src
     if [ "x${need_sources}" = "xy" ]; then
         apt-get source --download-only ${name}
         sudo apt-get -y build-dep ${name}
