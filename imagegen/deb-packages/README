@@ -1,0 +1,5 @@
+Packages required:
+* dpkg-dev
+* devscripts
+
+To build run build.sh in zfs-linux and grub2 folders.
