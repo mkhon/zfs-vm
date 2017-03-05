@@ -113,7 +113,7 @@ EXTRA_PACKAGES=$*
 
 . `dirname $0`/buildimage-functions
 
-#debian_requirements
+debian_requirements
 build_image ${EXTRA_PACKAGES}
 clone_image
 convert_images ${DISK} vmdk #qcow2 vdi qcow...

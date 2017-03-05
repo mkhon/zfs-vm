@@ -8,6 +8,8 @@ mkdir -p build
 
 . ../helpers.sh
 
+cp -a etc/apt/sources.list.d/sources.list /etc/apt/sources.list.d/build.list
+apt-get update
 patch_spl()
 {
     patch -p0 < ../../spl.patch

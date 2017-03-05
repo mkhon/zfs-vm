@@ -6,7 +6,7 @@ build_package()
     mkdir -p src && cd src
     if [ "x${need_sources}" = "xy" ]; then
         apt-get source --download-only ${name}
-        sudo apt-get -y build-dep ${name}
+        apt-get -y build-dep ${name}
     fi
     dsc=`apt-get source --print-uris --download-only ${name} | grep .dsc | awk '{print $NF}' | tr -d /\'/`
     builddir=`dpkg-source -x $dsc | grep 'extracting' | awk '{print $NF}'`

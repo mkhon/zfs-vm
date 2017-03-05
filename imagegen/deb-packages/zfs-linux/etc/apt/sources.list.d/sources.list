@@ -1,4 +1,4 @@
 # ZFS source packages and it's build dependencies
-# deb http://debian.osuosl.org/debian/ wheezy-backports main contrib non-free
-# deb-src http://debian.osuosl.org/debian/ wheezy-backports main contrib non-free
-deb-src http://debian.osuosl.org/debian/ jessie-backports main contrib non-free
+deb http://debian.volia.net/debian/ wheezy-updates main contrib non-free
+deb http://debian.volia.net/debian/ wheezy-backports main contrib non-free
+deb-src http://debian.volia.net/debian/ jessie-backports main contrib non-free

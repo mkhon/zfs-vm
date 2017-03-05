@@ -1,2 +1,4 @@
 # grub-pc only source package
-deb-src http://http.us.debian.org/debian unstable main
+deb http://debian.volia.net/debian/ wheezy-updates main contrib non-free
+deb http://debian.volia.net/debian/ wheezy-backports main contrib non-free
+deb-src http://debian.volia.net/debian unstable main
