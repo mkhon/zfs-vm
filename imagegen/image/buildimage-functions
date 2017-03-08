@@ -1,8 +1,8 @@
 DEBIAN_VERSION=wheezy
-BUILDDEV_PACKAGES="qemu-utils kpartx gdisk debootstrap iptables vagrant virtualbox qemu-kvm man less"
+BUILDDEV_PACKAGES="qemu-utils kpartx gdisk debootstrap iptables vagrant virtualbox qemu-kvm man less zfs-fuse vim lsb-release vim less"
 EXTRA_PACKAGES="vim "
 ZFS_MOUNTPOINT=/mnt/debian_loop
-STORAGE=`pwd`/build/deb-packages
+DEB_STORAGE=`pwd`/../deb-packages
 CHROOT_STORAGE=/var/tmp/storage
 debootstrap_url=http://debian.volia.net/debian/
 #APT_OPT="--force-yes --allow-unauthenticated"
@@ -33,7 +33,7 @@ detach_pool()
     fi
     # 'proper' way below does not work on old vagrant zfs debian image VM as zpool does not support -P
     #loopdev=`zpool status ${pool} -P | awk '/\/dev\/mapper/ {print $1}' | sed 's/.*\///;s/p[0-9]$//'`
-    loopdev=`zpool status ${pool} | grep -A 1 ${pool}.*ONLINE | awk '/loop/ {print $1}' | sed 's/.*\///;s/p[0-9]$//'`
+    loopdev=`zpool status ${pool} | grep -A 1 ${pool}.*ONLINE | awk '/loop/ {print $1}' | sed 's/.*loop/loop/;s/p[0-9]$//'`
 
     mount | grep -v "^${pool}" | tac | grep ${mountpoint} | awk '{print $3}' | xargs -i{} umount -lf {}
     zpool export ${pool}
@@ -62,6 +62,7 @@ mount_disk_image()
     losetup /dev/${loop_d1} ${imgfile} 
     losetup /dev/${loop_d2} /dev/${loop_d1}
     kpartx -a /dev/${loop_d2} || /bin/true
+    sleep 1
 }
 
 zfs_disk_markup()
@@ -116,6 +117,23 @@ zfs_pool()
     fi
     mkdir -p ${mountpoint}
     rm -rf ${mountpoint}/*
+    zpool create \
+          -O atime=off -O canmount=off -O compression=on -O normalization=formD \
+          -O mountpoint=/ -R ${mountpoint} \
+          ${pool} /dev/mapper/${loop_dev}p1
+    root_pool_layout ${pool}
+}
+
+xzfs_pool()
+{
+    loop_dev=$1
+    pool=$2
+    mountpoint=$3
+    if [ -z "${mountpoint}" ]; then
+        /bin/false
+    fi
+    mkdir -p ${mountpoint}
+    rm -rf ${mountpoint}/*
     zpool create -o ashift=12 \
           -O atime=off -O canmount=off -O compression=lz4 -O normalization=formD \
           -O mountpoint=/ -R ${mountpoint} \
@@ -131,7 +149,7 @@ install_os_base_deboostrap()
     mkdir -p ${TMP_OS}
 #    chmod 1777 ${ZFS_MOUNTPOINT}/var/tmp
     debootstrap --arch=amd64 --variant=minbase ${DEBIAN_VERSION} ${TMP_OS} ${debootstrap_url}
-    rsync -avv --checksum --inplace --delete ${TMP_OS}/ ${REAL_TARGET}/
+    rsync -a --checksum --inplace --delete ${TMP_OS}/ ${REAL_TARGET}/
 }
 
 install_os_base()
@@ -214,7 +232,8 @@ EOF
 
 update_initrd()
 {
-    chroot ${ZFS_MOUNTPOINT} /bin/bash --login -x <<EOF
+    root=$1
+    chroot ${root} /bin/bash --login -x <<EOF
 vz_version=\`find /lib/modules/ -mindepth 1 -maxdepth 1 -type d -name '*openvz*' -printf '%P'\`
 update-initramfs -u -k \${vz_version} -t
 
@@ -228,8 +247,12 @@ prep_chroot()
     mount --rbind /dev  ${ZFS_MOUNTPOINT}/dev
     mount --rbind /proc ${ZFS_MOUNTPOINT}/proc
     mount --rbind /sys  ${ZFS_MOUNTPOINT}/sys
+
+    # we need run to access fuse userspace daemon from parent env
+    mount --rbind /run ${ZFS_MOUNTPOINT}/run
+
     mkdir -p ${ZFS_MOUNTPOINT}/${CHROOT_STORAGE}
-    mount --rbind ${STORAGE} ${ZFS_MOUNTPOINT}/${CHROOT_STORAGE}
+    mount --rbind ${DEB_STORAGE} ${ZFS_MOUNTPOINT}/${CHROOT_STORAGE}
 }
 
 install_os()
@@ -287,8 +310,8 @@ echo deb http://download.openvz.org/debian wheezy main >> /etc/apt/sources.list
 exit
 EOF
 
-    cleanup_dev ${ZFS_MOUNTPOINT}
-    zfs snapshot ${ROOT_POOL}/ROOT/debian@install
+#    cleanup_dev ${ZFS_MOUNTPOINT}
+#    zfs snapshot ${ROOT_POOL}/ROOT/debian@install
 }
 
 configure_vz()
@@ -357,7 +380,7 @@ EOF
 
 install_zfs()
 {
-cd ${STORAGE}
+cd ${DEB_STORAGE}
 sh ./repo.sh
 cd -
 # weezy-backports required!
@@ -374,32 +397,26 @@ exit
 EOF
 }
 
-install_grub()
+install_grub_package()
 {
     mountpoint=$1
-    device=$2
-    update_initrd
     chroot ${mountpoint} /bin/bash --login -x <<EOF
 cd ${CHROOT_STORAGE}/grub2/build
 DEBIAN_FRONTEND=noninteractive PATH=\`pwd\`/../dh_new/bin:$PATH apt-get install -y grub-pc
-# /etc/grub.d/10_linux
-# LINUX_ROOT_DEVICE="ZFS=${rpool}${bootfs} boot=zfs"
-sed -i 's/LINUX_ROOT_DEVICE="ZFS=\${rpool}\${bootfs}"/LINUX_ROOT_DEVICE="ZFS=\${rpool}\${bootfs} boot=zfs"/g' /etc/grub.d/10_linux
-grub-install /dev/${device}
-update-grub
 exit
 EOF
 }
 
-xinstall_grub()
+install_grub()
 {
     mountpoint=$1
     device=$2
-    update_initrd
+
+    # in case of userspace fuse we need it's zpool as module based
+    # can not work withoug loaded kernel module
+    mount --rbind `which zpool` ${mountpoint}/`which zpool`
+
     chroot ${mountpoint} /bin/bash --login -x <<EOF
-apt-get install -y libfreetype6 libfuse2 gettext-base ucf
-cd ${CHROOT_STORAGE}/grub2/build
-DEBIAN_FRONTEND=noninteractive PATH=\`pwd\`/../dh_new/bin:$PATH dpkg -i grub-common_2.02~beta3-4_amd64.deb grub2-common_2.02~beta3-4_amd64.deb grub-pc_2.02~beta3-4_amd64.deb grub-pc-bin_2.02~beta3-4_amd64.deb
 # /etc/grub.d/10_linux
 # LINUX_ROOT_DEVICE="ZFS=${rpool}${bootfs} boot=zfs"
 sed -i 's/LINUX_ROOT_DEVICE="ZFS=\${rpool}\${bootfs}"/LINUX_ROOT_DEVICE="ZFS=\${rpool}\${bootfs} boot=zfs"/g' /etc/grub.d/10_linux
@@ -407,15 +424,15 @@ grub-install /dev/${device}
 update-grub
 exit
 EOF
+    umount ${mountpoint}/`which zpool`
+    update_initrd ${mountpoint}
 }
 
 build_image()
 {
     EXTRA_PACKAGES="$EXTRA_PACKAGES $*"
-    mkdir -p ${STORAGE}
+    mkdir -p ${DEB_STORAGE}
     mkdir -p ${ZFS_MOUNTPOINT}
-    #apt-key update
-    #apt-get update
 
     cleanup
     (modprobe loop || /bin/true) 2>/dev/null # old kernels like VZ does not have loop module
@@ -430,7 +447,7 @@ build_image()
     configure_os
     [ "xyes" = "x${INSTALL_VZ}" ] && install_vz
     install_zfs
-    install_grub ${ZFS_MOUNTPOINT} loop1
+    install_grub_package ${ZFS_MOUNTPOINT}
 
     finalize
     detach_pool ${ROOT_POOL}
@@ -440,7 +457,7 @@ cleanup_dev()
 {
     fs=$1
     chroot ${fs} /bin/bash --login -x <<EOF
-tar -cvf backup.tar \`find /lib/modules -type d -name dkms\`
+tar -cf backup.tar \`find /lib/modules -type d -name dkms\`
 for e in \`dpkg -L zfs-initramfs\`; do
     test -d \$e || tar -rf backup.tar \$e
 done
@@ -456,12 +473,12 @@ done
 rm -rf /lib/firmware/\${vz_version}
 
 # we need return back zfs modules for update-initrd
-tar -xvf backup.tar -C / && rm backup.tar
+tar -xf backup.tar -C / && rm backup.tar
 for k in \`ls /lib/modules/\`; do
 depmod -a \$k
 done
 EOF
-    update_initrd
+    update_initrd ${fs}
 }
 
 # vi: set filetype=sh expandtab sw=4 ts=4 :
