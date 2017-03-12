@@ -147,7 +147,6 @@ install_os_base_deboostrap()
     TMP_OS=/var/tmp/os
     rm -rf ${TMP_OS}
     mkdir -p ${TMP_OS}
-#    chmod 1777 ${ZFS_MOUNTPOINT}/var/tmp
     debootstrap --arch=amd64 --variant=minbase ${DEBIAN_VERSION} ${TMP_OS} ${debootstrap_url}
     rsync -a --checksum --inplace --delete ${TMP_OS}/ ${REAL_TARGET}/
 }

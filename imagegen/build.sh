@@ -2,7 +2,7 @@
 
 set -e
 
-BUILDDIR=build
+BUILDDIR=${BUILDDIR:-build}
 DEBENV=${BUILDDIR}/env
 
 prep_sources()
@@ -24,6 +24,9 @@ prep_env()
 	rm -rf ${root_dir}
 	mkdir -p ${root_dir}
 	debootstrap  --arch=amd64 --variant=minbase wheezy ${DEBENV} http://debian.volia.net/debian/
+	if [ -n "${ROOT_POOL_SOURCE}" ]; then
+		mount --rbind ${ROOT_POOL_SOURCE} ${DEBENV}/${ROOT_POOL_SOURCE}
+	fi
 }
 
 prep_chroot()
