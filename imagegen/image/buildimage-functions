@@ -306,11 +306,17 @@ apt-get clean
 rm -f /var/lib/apt/lists/*
 echo deb http://httpredir.debian.org/debian ${DEBIAN_VERSION} main > /etc/apt/sources.list
 echo deb http://download.openvz.org/debian wheezy main >> /etc/apt/sources.list
+# install pool upgrade hook on first boot
+mv /etc/rc.local /etc/rc.local.orig
+echo zpool upgrade -a >> /etc/rc.local
+echo mv /etc/rc.local /etc/rc.local.zfs
+echo mv /etc/rc.local.orig /etc/rc.local
+
 exit
 EOF
 
-#    cleanup_dev ${ZFS_MOUNTPOINT}
-#    zfs snapshot ${ROOT_POOL}/ROOT/debian@install
+    cleanup_dev ${ZFS_MOUNTPOINT}
+    zfs snapshot ${ROOT_POOL}/ROOT/debian@install
 }
 
 configure_vz()
@@ -455,6 +461,7 @@ build_image()
 cleanup_dev()
 {
     fs=$1
+    rm -f ${fs}/etc/apt/sources.list.d/zfsvm.list
     chroot ${fs} /bin/bash --login -x <<EOF
 tar -cf backup.tar \`find /lib/modules -type d -name dkms\`
 for e in \`dpkg -L zfs-initramfs\`; do

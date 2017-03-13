@@ -1,5 +1,7 @@
 #!/bin/sh
 
+# NOTE, debootstrap and lsof required for proper built procedure
+
 set -e
 
 BUILDDIR=${BUILDDIR:-build}
@@ -57,21 +59,34 @@ EOF
 build_image()
 {
 	root_dir=$1
+	preset=$2
 chroot ${root_dir} bash --login -x <<EOF
 	set -e
 	ln -sf /proc/mounts /etc/mtab
-	cd /var/tmp/sources/image && sh -x mkdeb.sh /var/tmp/zfsroot.img presets/debootstrapped
+	cd /var/tmp/sources/image && sh -x mkdeb.sh /var/tmp/zfsroot.img ${preset}
 	exit
 EOF
+mv ${root_dir}/var/tmp/zfsroot.img.vmdk.vagrant-vbox.box ${BUILDDIR}/
+mv ${root_dir}/var/tmp/zfsroot.img ${BUILDDIR}/
+echo 'Disk image and vagrant box created'
+du -sh ${BUILDDIR}/zfsroot.img
+du -sh ${BUILDDIR}/zfsroot.img.vmdk.vagrant-vbox.box
 }
 
-lsof -P | grep ${DEBENV} | awk '{print $2'} | sort | uniq | xargs -I 0 -r kill 0
-# wait a bit after fuse, sshd, atd killed in chroot which locks it
-sleep 5
-mount | grep ${DEBENV} | tac | awk '{print $3}' | xargs -I 0 -r umount 0
-rm -rf ${BUILDDIR}
-prep_env ${DEBENV}
-prep_sources ${DEBENV} ${BUILDDIR}
-prep_chroot ${DEBENV}
-build_zfs_packages ${DEBENV}
-build_image ${DEBENV}
+main()
+{
+	preset=$1
+	preset=${preset:-presets/debootstrapped}
+	lsof -P | grep ${DEBENV} | awk '{print $2'} | sort | uniq | xargs -I 0 -r kill 0
+	# wait a bit after fuse, sshd, atd killed in chroot which locks it
+	sleep 5
+	mount | grep ${DEBENV} | tac | awk '{print $3}' | xargs -I 0 -r umount 0
+	rm -rf ${BUILDDIR}
+	prep_env ${DEBENV}
+	prep_sources ${DEBENV} ${BUILDDIR}
+	prep_chroot ${DEBENV}
+	build_zfs_packages ${DEBENV}
+	build_image ${DEBENV} ${preset}
+}
+
+main $*
