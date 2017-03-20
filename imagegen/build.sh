@@ -7,43 +7,77 @@ set -e
 BUILDDIR=${BUILDDIR:-build}
 DEBENV=${BUILDDIR}/env
 
+do_step()
+{
+	cmd=$1
+	shift
+	if [ -f ${BUILDDIR}/$cmd ]; then
+		echo Skipping $cmd
+		return
+	fi
+	echo [`date --rfc-3339=seconds`] do_step $cmd $* 
+	$cmd $*
+	touch ${BUILDDIR}/$cmd
+}
+
+transfer()
+{
+	src=$1
+	dst=$2
+	mkdir -p ${dst}
+	tar -C ${src} -cf - . | tar -C ${dst} -xf -
+#	rsync -a --checksum --inplace --delete ${src} ${dst}
+}
+
+readonly_l0_mount()
+{
+	env_root=$1
+	src=$2
+	dst=${env_root}/$3
+	mkdir -p ${dst}
+	mount --rbind -o ro ${src} ${dst}
+	mount --rbind -o remount,ro ${src} ${dst}
+}
+
 prep_sources()
 {
-	root_dir=$1
-	build_dir=$2
-	mkdir -p ${root_dir}/home/vagrant
-	mkdir -p ${root_dir}/var/tmp/sources
+	build_dir=$1
+
 	mkdir -p ${build_dir}/sources/
-	scp -r `pwd`/deb-packages ${build_dir}/sources/
-	scp -r `pwd`/image ${build_dir}/sources/
-	mkdir -p ${root_dir}/var/tmp/sources
-	mount --rbind ${build_dir}/sources ${root_dir}/var/tmp/sources
+	transfer `pwd`/deb-packages ${build_dir}/sources/deb-packages
+	transfer `pwd`/image ${build_dir}/sources/image
 }
 
 prep_env()
 {
-	root_dir=$1
-	rm -rf ${root_dir}
-	mkdir -p ${root_dir}
+	env_root=$1
+	build_dir=$2
+	rm -rf ${env_root}
+	mkdir -p ${env_root}
 	debootstrap  --arch=amd64 --variant=minbase wheezy ${DEBENV} http://debian.volia.net/debian/
-	if [ -n "${ROOT_POOL_SOURCE}" ]; then
-		mount --rbind ${ROOT_POOL_SOURCE} ${DEBENV}/${ROOT_POOL_SOURCE}
-	fi
+
+	mkdir -p ${env_root}/var/tmp/sources
+	mount --rbind ${build_dir}/sources ${env_root}/var/tmp/sources
+
+	# mount l0 binraies for zfs utilities if any present in l0
+	readonly_l0_mount ${env_root} /sbin /usr/local/sbin
+	readonly_l0_mount ${env_root} /lib /usr/local/lib
 }
 
 prep_chroot()
 {
-	root_dir=$1
-	mount --rbind /dev  ${root_dir}/dev
-	mount --rbind /proc ${root_dir}/proc
-	mount --rbind /sys  ${root_dir}/sys
+	env_root=$1
+	mount --rbind /dev  ${env_root}/dev
+	mount --rbind /proc ${env_root}/proc
+	mount --rbind /sys  ${env_root}/sys
 }
 
 build_zfs_packages()
 {
-	root_dir=$1
+	env_root=$1
+	mkdir -p ${env_root}/home/vagrant
 
-chroot ${root_dir} bash --login -x <<EOF
+chroot ${env_root} bash --login -x <<EOF
 	set -e
 	ln -sf /proc/mounts /etc/mtab
 	cd /var/tmp/sources/deb-packages
@@ -58,35 +92,67 @@ EOF
 
 build_image()
 {
-	root_dir=$1
+	env_root=$1
 	preset=$2
-chroot ${root_dir} bash --login -x <<EOF
+
+# try use existing ZFS tools with fallback to fuse
+if zpool list; then
+echo 'Use existing ZFS utilities'
+FUSE_ZFS='no'
+preset=${preset:-rootds_based_debootstrapped}
+else
+echo 'Use ZFS fuse utilities'
+FUSE_ZFS='yes'
+preset=${preset:-debootstrapped}
+fi
+
+chroot ${env_root} bash --login -x <<EOF
 	set -e
 	ln -sf /proc/mounts /etc/mtab
-	cd /var/tmp/sources/image && sh -x mkdeb.sh /var/tmp/zfsroot.img ${preset}
+	cd /var/tmp/sources/image
+	FUSE_ZFS=${FUSE_ZFS} sh -x mkdeb.sh /var/tmp/zfsroot.img presets/${preset}
 	exit
 EOF
-mv ${root_dir}/var/tmp/zfsroot.img.vmdk.vagrant-vbox.box ${BUILDDIR}/
-mv ${root_dir}/var/tmp/zfsroot.img ${BUILDDIR}/
+mv ${env_root}/var/tmp/zfsroot.img.vmdk.vagrant-vbox.box ${BUILDDIR}/
+mv ${env_root}/var/tmp/zfsroot.img ${BUILDDIR}/
 echo 'Disk image and vagrant box created'
 du -sh ${BUILDDIR}/zfsroot.img
 du -sh ${BUILDDIR}/zfsroot.img.vmdk.vagrant-vbox.box
 }
 
-main()
+cleanup_env()
 {
-	preset=$1
-	preset=${preset:-presets/debootstrapped}
-	lsof -P | grep ${DEBENV} | awk '{print $2'} | sort | uniq | xargs -I 0 -r kill 0
+	set +e
+	env_root=$1
+
+	zpool export rpool
+	zpool export drpool
+chroot ${env_root} bash --login -x <<EOF
+	/etc/init.d/zfs-fuse stop
+	losetup -a | tac | awk '{print \$1}' | sed 's/://' | xargs -r -I 0 kpartx -d 0
+	losetup -a | tac | awk '{print \$1}' | sed 's/://' | xargs -r -I 0 losetup -d 0
+EOF
+
+	#lsof -P | grep ${env_root} | awk '{print $2'} | sort | uniq | xargs -I 0 -r kill 0
 	# wait a bit after fuse, sshd, atd killed in chroot which locks it
 	sleep 5
 	mount | grep ${DEBENV} | tac | awk '{print $3}' | xargs -I 0 -r umount 0
+	set -e
+	mount | grep ${DEBENV} | tac | awk '{print $3}' | xargs -I 0 -r /bin/false
 	rm -rf ${BUILDDIR}
-	prep_env ${DEBENV}
-	prep_sources ${DEBENV} ${BUILDDIR}
-	prep_chroot ${DEBENV}
-	build_zfs_packages ${DEBENV}
-	build_image ${DEBENV} ${preset}
+}
+
+main()
+{
+	preset=$1
+	if [ "x${FULL}" = "xyes" ]; then
+		cleanup_env ${DEBENV}
+	fi
+	do_step prep_sources ${BUILDDIR}
+	do_step prep_env ${DEBENV} ${BUILDDIR}
+	do_step prep_chroot ${DEBENV}
+	do_step build_zfs_packages ${DEBENV}
+	do_step build_image ${DEBENV} ${preset}
 }
 
 main $*

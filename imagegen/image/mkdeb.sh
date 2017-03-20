@@ -19,9 +19,8 @@ clone_image()
     zpool export ${dst_pool} || /bin/true
     zpool export ${src_pool} || /bin/true
     mount_disk_image ${src_diskimg} loop0 loop1
-    zpool import ${src_pool} -R ${ZFS_MOUNTPOINT}
-    #pool_mount ${src_pool}
-    #(zfs list -H -r -t filesystem -o name ${src_pool} | sort -k 4 | xargs -r -I 0 zfs mount 0) || /bin/true
+    zpool import ${src_pool} -R ${ZFS_MOUNTPOINT} ${ZPOOL_IMPORT_OPTS}
+    pool_mount ${src_pool}
     zfs destroy -r ${src_pool}@transfer || /bin/true
     zfs snapshot -r ${src_pool}@transfer
 
@@ -30,22 +29,24 @@ clone_image()
     zfs_pool loop3 ${dst_pool} ${clone_mount}
 
     zpool export ${dst_pool} || /bin/true
-    zpool import -R ${clone_mount} ${dst_pool}
+    zpool import ${ZPOOL_IMPORT_OPTS} -R ${clone_mount} ${dst_pool}
     zfs destroy ${dst_pool}/ROOT/debian
     zfs send -R ${src_pool}@transfer | zfs recv -F ${dst_pool}
     zfs destroy -r ${dst_pool}@transfer
     detach_pool ${src_pool}
     zpool export ${dst_pool}
     rm -rf /mnt/clone/*
-    zpool import -R ${clone_mount} ${dst_pool} ${ROOT_POOL}
+    zpool import ${ZPOOL_IMPORT_OPTS} -R ${clone_mount} ${dst_pool} ${ROOT_POOL}
     pool_mount ${ROOT_POOL}
-#    (zfs list -H -r -t filesystem -o name ${ROOT_POOL} | sort -k 4 | xargs -r -I 0 zfs mount 0) || /bin/true
     ls -lrt $clone_mount
     mount --rbind /dev  ${clone_mount}/dev
     mount --rbind /proc ${clone_mount}/proc
     mount --rbind /sys  ${clone_mount}/sys
-    # we need run to access fuse userspace daemon from parent env
-    mount --rbind /run ${clone_mount}/run
+
+    if [ "x${FUSE_ZFS}" = 'xyes' ]; then
+        # we need run to access fuse userspace daemon from parent env
+        mount --rbind /run ${clone_mount}/run
+    fi
     install_grub ${clone_mount} loop3
     zfs list -t all ${ROOT_POOL}
     detach_pool ${ROOT_POOL}    
@@ -78,6 +79,7 @@ make_vagrant_boxes()
 cleanup() {
 set +e
 detach_pool ${ROOT_POOL} >/dev/null 2>&1
+set -e
 # be paranoid
 return
 bash >/dev/null 2>&1 <<EOF

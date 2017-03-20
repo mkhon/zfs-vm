@@ -1,5 +1,5 @@
 DEBIAN_VERSION=wheezy
-BUILDDEV_PACKAGES="qemu-utils kpartx gdisk debootstrap iptables vagrant virtualbox qemu-kvm man less zfs-fuse vim lsb-release vim less"
+BUILDDEV_PACKAGES="qemu-utils kpartx gdisk debootstrap iptables vagrant virtualbox qemu-kvm man less vim lsb-release vim less "
 EXTRA_PACKAGES="vim "
 ZFS_MOUNTPOINT=/mnt/debian_loop
 DEB_STORAGE=`pwd`/../deb-packages
@@ -9,19 +9,25 @@ debootstrap_url=http://debian.volia.net/debian/
 APT_OPT=""
 ZFSREPOPACKAGE=''
 
+if [ "x${FUSE_ZFS}" = "xno" ]; then
+ZPOOL_CREATE_OPTS="-O compression=lz4 -o ashift=12"
+ZPOOL_IMPORT_OPTS="-N"
+export PATH=/sbin:$PATH:/usr/local/sbin
+export LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:/usr/local/lib
+else
+BUILDDEV_PACKAGES="${BUILDDEV_PACKAGES} zfs-fuse"
+ZPOOL_CREATE_OPTS="-O compression=on"
+fi
+
 debian_requirements()
 {
-    # debian
-    codename=`lsb_release -c | awk '{print $2}'`
-    if [ "x${codename}" = "xwheezy" ]; then
-        apt-get install --yes ${BUILDDEV_PACKAGES}
-    fi
+    apt-get install --yes ${BUILDDEV_PACKAGES}
 }
 
 pool_mount()
 {
     pname=$1
-    zfs list -H -r -t filesystem -o name,canmount -s name ${pname} | grep -vw off | awk '{print $1}' | xargs -r -I 0 zfs mount 0
+    zfs list -H -r -t filesystem -o name,canmount,mounted -s name ${pname} | awk '/(on|noauto).*no/{print $1}' | xargs -r -I 0 zfs mount 0
 }
 
 detach_pool()
@@ -118,7 +124,8 @@ zfs_pool()
     mkdir -p ${mountpoint}
     rm -rf ${mountpoint}/*
     zpool create \
-          -O atime=off -O canmount=off -O compression=on -O normalization=formD \
+          ${ZPOOL_CREATE_OPTS} \
+          -O atime=off -O canmount=off -O normalization=formD \
           -O mountpoint=/ -R ${mountpoint} \
           ${pool} /dev/mapper/${loop_dev}p1
     root_pool_layout ${pool}
@@ -144,11 +151,17 @@ xzfs_pool()
 install_os_base_deboostrap()
 {
     REAL_TARGET=$1
+    EXCLUDE_DIR=$2
+    if [ -n "${EXCLUDE_DIR}" ]; then
+        EXCLUDE_DIR=`echo ${EXCLUDE_DIR} | sed "s|^${REAL_TARGET}||"`
+        EXCLUDE_OPTS="--exclude ${EXCLUDE_DIR}"
+    fi
     TMP_OS=/var/tmp/os
+    mount | tac | grep ${TMP_OS} | awk '{print $3}' | xargs -i{} umount -lf {}
     rm -rf ${TMP_OS}
     mkdir -p ${TMP_OS}
     debootstrap --arch=amd64 --variant=minbase ${DEBIAN_VERSION} ${TMP_OS} ${debootstrap_url}
-    rsync -a --checksum --inplace --delete ${TMP_OS}/ ${REAL_TARGET}/
+    rsync -av --checksum --inplace --delete ${EXCLUDE_OPTS} ${TMP_OS}/ ${REAL_TARGET}/
 }
 
 install_os_base()
@@ -156,7 +169,7 @@ install_os_base()
     pool=$1
     root_src=${ROOT_POOL_SOURCE}
     root_dst=${ROOT_POOL_DST}
-    if [ -n "${root_src}" ]; then
+    if [ -n "${root_src}" -a "x${FUSE_ZFS}" = "xno" ]; then
         root_src=${ROOT_POOL_SOURCE}@rootsrc
         zfs destroy ${root_src} || /bin/true
         zfs snapshot ${root_src}
@@ -165,29 +178,36 @@ install_os_base()
             rm -rf ${ZFS_MOUNTPOINT}/*
             zpool import -R ${ZFS_MOUNTPOINT} -N ${pool}
             zfs create -p ${pool}/${root_dst}
-            zfs send ${root_src} | zfs recv -Fu ${pool}/${ROOT_POOL_DST}
+            zfs send ${root_src} | zfs recv -F ${pool}/${ROOT_POOL_DST}
             zfs unmount ${pool}/${ROOT_POOL_DST}
-            zfs set mountpoint=`zfs list -H -o mountpoint ${ROOT_POOL_SOURCE}` ${pool}/${ROOT_POOL_DST}
             zfs destroy ${root_src}
-
-            #zfs snapshot ${pool}/${root_dst}@rootsrc
             zfs destroy ${pool}/ROOT/debian
+
+            # transfer mountpoints
+            srcpool=`echo ${ROOT_POOL_SOURCE} | awk -F/ '{print $1}'`
+            for ds in `zfs list -r -t all -o name,canmount ${pool} | awk '/on/{print $1}' | sed "s/^${pool}\///"`; do
+                zfs set mountpoint=`zfs list -H -o mountpoint ${srcpool}/${ds}` ${pool}/${ds}
+            done
+
             zfs clone -o canmount=noauto -o mountpoint=/ ${pool}/${root_dst}@rootsrc ${pool}/ROOT/debian
-            zfs destroy ${pool}/${ROOT_POOL_DST}@rootsrc
+            # zfs promote ${pool}/ROOT/debian
             # w/a issue that clone op mount file system even with -u
             zpool export ${pool}
             rm -rf ${ZFS_MOUNTPOINT}/*
             zpool import -R ${ZFS_MOUNTPOINT} -N ${pool}
             pool_mount ${pool}
-#            (zfs list -H -r -t filesystem -o name ${pool} | sort -k 4 | xargs -r -I 0 zfs mount 0) || /bin/true
+
             # unmount rootfs source so rsync will not cleanup it
-            [ "xyes" = "x${ROOT_DEBOOTSTRAP}" ] && zfs umount ${pool}/${ROOT_POOL_DST}
+            if [ "xyes" = "x${ROOT_DEBOOTSTRAP}" ]; then
+                EXCLUDE_DIR=`zfs list -H -o mountpoint ${pool}/${ROOT_POOL_DST}`
+                #zfs umount ${pool}/${ROOT_POOL_DST}
+            fi
         fi
     else
         # simple debootstrap, do nothing
         /bin/true
     fi
-    [ "xyes" = "x${ROOT_DEBOOTSTRAP}" ] && install_os_base_deboostrap ${ZFS_MOUNTPOINT}
+    [ "xyes" = "x${ROOT_DEBOOTSTRAP}" ] && install_os_base_deboostrap ${ZFS_MOUNTPOINT} ${EXCLUDE_DIR}
     cp -f /etc/resolv.conf ${ZFS_MOUNTPOINT}/etc/
 }
 
@@ -309,8 +329,9 @@ echo deb http://download.openvz.org/debian wheezy main >> /etc/apt/sources.list
 # install pool upgrade hook on first boot
 mv /etc/rc.local /etc/rc.local.orig
 echo zpool upgrade -a >> /etc/rc.local
-echo mv /etc/rc.local /etc/rc.local.zfs
-echo mv /etc/rc.local.orig /etc/rc.local
+echo mv /etc/rc.local /etc/rc.local.zfs >> /etc/rc.local
+echo mv /etc/rc.local.orig /etc/rc.local >> /etc/rc.local
+chmod +x /etc/rc.local
 
 exit
 EOF
@@ -417,9 +438,11 @@ install_grub()
     mountpoint=$1
     device=$2
 
-    # in case of userspace fuse we need it's zpool as module based
-    # can not work withoug loaded kernel module
-    mount --rbind `which zpool` ${mountpoint}/`which zpool`
+    if [ "x${FUSE_ZFS}" = 'xyes' ]; then
+        # in case of userspace fuse we need it's zpool as module based
+        # can not work without loaded kernel module
+        mount --rbind `which zpool` ${mountpoint}/`which zpool`
+    fi
 
     chroot ${mountpoint} /bin/bash --login -x <<EOF
 # /etc/grub.d/10_linux
@@ -429,7 +452,10 @@ grub-install /dev/${device}
 update-grub
 exit
 EOF
-    umount ${mountpoint}/`which zpool`
+
+    if [ "x${FUSE_ZFS}" = 'xyes' ]; then
+        umount ${mountpoint}/`which zpool`
+    fi
     update_initrd ${mountpoint}
 }
 
@@ -441,7 +467,7 @@ build_image()
 
     cleanup
     (modprobe loop || /bin/true) 2>/dev/null # old kernels like VZ does not have loop module
-    modprobe zfs
+    modprobe zfs || /bin/true
     create_disk_image ${DISK} loop0 loop1
     zfs_pool loop1 ${ROOT_POOL} ${ZFS_MOUNTPOINT}
     install_os_base ${ROOT_POOL}
