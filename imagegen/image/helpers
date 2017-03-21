@@ -1,0 +1,9 @@
+f_debootstrap()
+{
+	env_root=$1
+        shift
+        mount | tac | grep ${env_root} | awk '{print $3}' | xargs -i{} umount -lf {}
+	rm -rf ${env_root}
+	mkdir -p ${env_root}
+	debootstrap $*
+}

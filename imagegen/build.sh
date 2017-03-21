@@ -7,6 +7,8 @@ set -e
 BUILDDIR=${BUILDDIR:-build}
 DEBENV=${BUILDDIR}/env
 
+. image/helpers
+
 do_step()
 {
 	cmd=$1
@@ -26,7 +28,6 @@ transfer()
 	dst=$2
 	mkdir -p ${dst}
 	tar -C ${src} -cf - . | tar -C ${dst} -xf -
-#	rsync -a --checksum --inplace --delete ${src} ${dst}
 }
 
 readonly_l0_mount()
@@ -52,9 +53,7 @@ prep_env()
 {
 	env_root=$1
 	build_dir=$2
-	rm -rf ${env_root}
-	mkdir -p ${env_root}
-	debootstrap  --arch=amd64 --variant=minbase wheezy ${DEBENV} http://debian.volia.net/debian/
+	f_debootstrap ${env_root} --arch=amd64 --variant=minbase wheezy ${env_root} http://debian.volia.net/debian/
 
 	mkdir -p ${env_root}/var/tmp/sources
 	mount --rbind ${build_dir}/sources ${env_root}/var/tmp/sources
@@ -77,15 +76,17 @@ build_zfs_packages()
 	env_root=$1
 	mkdir -p ${env_root}/home/vagrant
 
-chroot ${env_root} bash --login -x <<EOF
+chroot ${env_root} bash --login ${SHELLX} <<EOF
 	set -e
 	ln -sf /proc/mounts /etc/mtab
 	cd /var/tmp/sources/deb-packages
+	apt-get install -y locales
+        localedef -i en_US -f UTF-8 en_US.UTF-8
 	apt-get install -y patch devscripts dpkg-dev
 
-	cd zfs-linux && sh -x build.sh
+	cd zfs-linux && sh ${SHELLX} build.sh
 	cd -
-	cd grub2 && sh -x build.sh 
+	cd grub2 && sh ${SHELLX} build.sh 
 	exit
 EOF
 }
@@ -106,11 +107,11 @@ FUSE_ZFS='yes'
 preset=${preset:-debootstrapped}
 fi
 
-chroot ${env_root} bash --login -x <<EOF
+chroot ${env_root} bash --login ${SHELLX} <<EOF
 	set -e
 	ln -sf /proc/mounts /etc/mtab
 	cd /var/tmp/sources/image
-	FUSE_ZFS=${FUSE_ZFS} sh -x mkdeb.sh /var/tmp/zfsroot.img presets/${preset}
+	FUSE_ZFS=${FUSE_ZFS} sh ${SHELLX} mkdeb.sh /var/tmp/zfsroot.img presets/${preset}
 	exit
 EOF
 mv ${env_root}/var/tmp/zfsroot.img.vmdk.vagrant-vbox.box ${BUILDDIR}/
@@ -125,15 +126,16 @@ cleanup_env()
 	set +e
 	env_root=$1
 
-	zpool export rpool
-	zpool export drpool
-chroot ${env_root} bash --login -x <<EOF
-	/etc/init.d/zfs-fuse stop
+	zpool list 2>/dev/null| awk '/rpool/{print $1}' | xargs -I 0 -r zpool export 0
+
+chroot ${env_root} bash --login ${SHELLX} <<EOF
+	service --status-all 2>&1| awk '/\[ \+ \]/{print \$NF}' |xargs -I 0 -r service 0 stop
+	sleep 5
 	losetup -a | tac | awk '{print \$1}' | sed 's/://' | xargs -r -I 0 kpartx -d 0
 	losetup -a | tac | awk '{print \$1}' | sed 's/://' | xargs -r -I 0 losetup -d 0
 EOF
 
-	#lsof -P | grep ${env_root} | awk '{print $2'} | sort | uniq | xargs -I 0 -r kill 0
+	# lsof -P | grep ${env_root} | awk '{print $2'} | sort | uniq | xargs -I 0 -r kill 0
 	# wait a bit after fuse, sshd, atd killed in chroot which locks it
 	sleep 5
 	mount | grep ${DEBENV} | tac | awk '{print $3}' | xargs -I 0 -r umount 0

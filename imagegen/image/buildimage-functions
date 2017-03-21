@@ -19,6 +19,8 @@ BUILDDEV_PACKAGES="${BUILDDEV_PACKAGES} zfs-fuse"
 ZPOOL_CREATE_OPTS="-O compression=on"
 fi
 
+. ./helpers
+
 debian_requirements()
 {
     apt-get install --yes ${BUILDDEV_PACKAGES}
@@ -131,23 +133,6 @@ zfs_pool()
     root_pool_layout ${pool}
 }
 
-xzfs_pool()
-{
-    loop_dev=$1
-    pool=$2
-    mountpoint=$3
-    if [ -z "${mountpoint}" ]; then
-        /bin/false
-    fi
-    mkdir -p ${mountpoint}
-    rm -rf ${mountpoint}/*
-    zpool create -o ashift=12 \
-          -O atime=off -O canmount=off -O compression=lz4 -O normalization=formD \
-          -O mountpoint=/ -R ${mountpoint} \
-          ${pool} /dev/mapper/${loop_dev}p1
-    root_pool_layout ${pool}
-}
-
 install_os_base_deboostrap()
 {
     REAL_TARGET=$1
@@ -157,11 +142,8 @@ install_os_base_deboostrap()
         EXCLUDE_OPTS="--exclude ${EXCLUDE_DIR}"
     fi
     TMP_OS=/var/tmp/os
-    mount | tac | grep ${TMP_OS} | awk '{print $3}' | xargs -i{} umount -lf {}
-    rm -rf ${TMP_OS}
-    mkdir -p ${TMP_OS}
-    debootstrap --arch=amd64 --variant=minbase ${DEBIAN_VERSION} ${TMP_OS} ${debootstrap_url}
-    rsync -av --checksum --inplace --delete ${EXCLUDE_OPTS} ${TMP_OS}/ ${REAL_TARGET}/
+    f_debootstrap ${TMP_OS} --arch=amd64 --variant=minbase ${DEBIAN_VERSION} ${TMP_OS} ${debootstrap_url}
+    rsync -a --checksum --inplace --delete ${EXCLUDE_OPTS} ${TMP_OS}/ ${REAL_TARGET}/
 }
 
 install_os_base()
